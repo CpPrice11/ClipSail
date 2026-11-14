@@ -1,0 +1,4 @@
+The UI uses a hand-drawn set of simple line icons.
+Gallery reference: https://en.eagle.cool/blog/post/how-to-organize-media-library
+Tabs reference: https://learn.microsoft.com/en-us/windows/apps/develop/ui/controls/navigationview
+Palette: https://github.com/catppuccin/catppuccin

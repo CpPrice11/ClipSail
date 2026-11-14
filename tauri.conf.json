@@ -1,0 +1,44 @@
+{
+  "productName": "ClipSail",
+  "version": "0.1.26",
+  "identifier": "local.media.downloader",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "ClipSail",
+        "theme": "Dark",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 690,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      },
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: asset: http://asset.localhost; connect-src ipc: http://ipc.localhost; media-src http: https: asset: http://asset.localhost; frame-src https://www.youtube.com; object-src 'none'; base-uri 'none'"
+    }
+  },
+  "bundle": {
+    "active": false
+  },
+  "mainBinaryName": "ClipSail",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/CpPrice11/ClipSail/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      },
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc0QjZDN0JFNERFMDQ2MzcKUldRM1J1Qk52c2UyZEVQTmw1WCtvTkNNVEVaNnFqMUoxTDJnRWdqWFUrVVMxWUd0SzZCZWFFdmcK",
+      "requireSignedVersion": true
+    }
+  }
+}

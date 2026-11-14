@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+  <script defer src="popup.js"></script>
+</head>
+<body>
+  <header><img src="icon.svg" width="24" height="24" alt=""><h1 data-message="app"></h1></header>
+  <main>
+    <p id="status" role="status"></p>
+    <button id="chooseVideoQuality" type="button" data-message="chooseQuality" hidden></button>
+    <div id="youtubeQualityControls" hidden></div>
+    <button id="copyVideoLink" type="button" data-message="copyVideoLink" hidden></button>
+    <div id="controls" hidden>
+      <label><span data-message="mediaType"></span>
+        <select id="mediaType">
+          <option value="all" data-message="all"></option>
+          <option value="video" data-message="videos"></option>
+          <option value="img" data-message="images"></option>
+          <option value="audio" data-message="audio"></option>
+        </select>
+      </label>
+      <button id="selectAll" type="button" data-message="selectAll"></button>
+      <button id="clearAll" type="button" data-message="clearAll"></button>
+    </div>
+    <ul id="videos" hidden></ul>
+    <button id="downloadSelected" type="button" data-message="downloadSelected" hidden disabled></button>
+    <details id="buttonSettings" hidden>
+      <summary data-message="floatingButtons"></summary>
+      <button id="togglePage" type="button"></button>
+      <button id="toggleSite" type="button"></button>
+      <button id="toggleGlobal" type="button"></button>
+    </details>
+  </main>
+  <footer id="connection" hidden>
+    <p data-message="sharingDescription"></p>
+    <button id="share" type="button" aria-pressed="false" data-message="sharingToggle"></button>
+    <p id="sharingStatus" role="status"></p>
+  </footer>
+</body>
+</html>

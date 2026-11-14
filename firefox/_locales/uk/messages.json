@@ -1,0 +1,175 @@
+{
+  "downloadOptions": {
+    "message": "Параметри завантаження відео"
+  },
+  "unsupportedVideo": {
+    "message": "ClipSail не знайшов підтримуваного джерела для цього плеєра."
+  },
+  "sentToClipSail": {
+    "message": "Передано в чергу завантажень ClipSail."
+  },
+  "allowClipSailTransfer": {
+    "message": "Відкрий панель розширення та дозволь передачу в ClipSail для Windows."
+  },
+  "downloadThisVideo": {
+    "message": "Завантажити це відео"
+  },
+  "checkingQualities": {
+    "message": "Перевіряю доступні якості…"
+  },
+  "youtubeTools": {
+    "message": "У комплекті ClipSail для Windows бракує інструментів для YouTube."
+  },
+  "youtubeUnavailable": {
+    "message": "Для цього відео YouTube немає доступної сумісної якості."
+  },
+  "connectClipSail": {
+    "message": "Відкрий ClipSail для Windows і натисни «Під’єднати Firefox / Zen»."
+  },
+  "sourceChanged": {
+    "message": "Файл вибраної якості більше недоступний. Онови сторінку й спробуй ще раз."
+  },
+  "sourceAccess": {
+    "message": "Firefox не надав доступу до сайту цього файла. Перевір дозволи розширення."
+  },
+  "app": {
+    "message": "ClipSail"
+  },
+  "description": {
+    "message": "Надсилай відео, фото й аудіо з Firefox до черги ClipSail для Windows."
+  },
+  "checking": {
+    "message": "Перевіряю вкладку…"
+  },
+  "permission": {
+    "message": "У Firefox відкрий налаштування дозволів ClipSail і ввімкни доступ до сайтів."
+  },
+  "inspectionFailed": {
+    "message": "Не вдалося перевірити вкладку. Онови вебсторінку й відкрий ClipSail знову."
+  },
+  "openSite": {
+    "message": "Відкрий сторінку з відео й спробуй ще раз."
+  },
+  "unavailable": {
+    "message": "Підтримуваних файлів не знайдено. Якщо плеєр ще завантажується, запусти відтворення."
+  },
+  "playFirst": {
+    "message": "Натисни Play, потім знову натисни «Завантажити»."
+  },
+  "chooseQuality": {
+    "message": "Вибрати якість відео"
+  },
+  "copyVideoLink": {
+    "message": "Копіювати посилання на відео"
+  },
+  "videoLinkCopied": {
+    "message": "Скопійовано. Встав посилання в ClipSail для Windows."
+  },
+  "videoLinkCopyFailed": {
+    "message": "Скопіюй посилання з адресного рядка браузера."
+  },
+  "protected": {
+    "message": "Це відео захищене DRM."
+  },
+  "download": {
+    "message": "Завантажити"
+  },
+  "downloadNamed": {
+    "message": "Завантажити $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "downloadFailed": {
+    "message": "Firefox не зміг почати завантаження. Перевір, чи файл досі доступний на сайті."
+  },
+  "sharingDescription": {
+    "message": "Дозволь передавати вибрані посилання й адресу сайту до ClipSail на цьому ПК."
+  },
+  "sharingToggle": {
+    "message": "Дозволити передачу в ClipSail для Windows"
+  },
+  "sharingOn": {
+    "message": "Передавання до ClipSail увімкнено."
+  },
+  "sharingOff": {
+    "message": "Передавання до ClipSail вимкнено."
+  },
+  "sharingFailed": {
+    "message": "Не вдалося змінити дозвіл на передавання. Перевір дозволи розширення у Firefox."
+  },
+  "all": {
+    "message": "Усі"
+  },
+  "audio": {
+    "message": "Аудіо"
+  },
+  "batchFailed": {
+    "message": "Деякі файли не вдалося завантажити. Вони залишилися вибраними."
+  },
+  "clearAll": {
+    "message": "Зняти вибір"
+  },
+  "disableGlobal": {
+    "message": "Приховати всюди"
+  },
+  "disablePage": {
+    "message": "Приховати на цій сторінці"
+  },
+  "disableSite": {
+    "message": "Приховати на цьому сайті"
+  },
+  "downloadSelected": {
+    "message": "Завантажити вибране"
+  },
+  "enableGlobal": {
+    "message": "Показувати всюди"
+  },
+  "enablePage": {
+    "message": "Показати на цій сторінці"
+  },
+  "enableSite": {
+    "message": "Показати на цьому сайті"
+  },
+  "floatingButtons": {
+    "message": "Плаваючі кнопки"
+  },
+  "highest": {
+    "message": "Найвища · $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "images": {
+    "message": "Фото"
+  },
+  "mediaType": {
+    "message": "Тип медіа"
+  },
+  "qualityNamed": {
+    "message": "Якість завантаження · $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "selectAll": {
+    "message": "Вибрати все"
+  },
+  "selectNamed": {
+    "message": "Вибрати $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "videos": {
+    "message": "Відео"
+  }
+}

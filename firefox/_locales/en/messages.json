@@ -1,0 +1,175 @@
+{
+  "downloadOptions": {
+    "message": "Video download options"
+  },
+  "unsupportedVideo": {
+    "message": "ClipSail could not find a supported video source for this player."
+  },
+  "sentToClipSail": {
+    "message": "Sent to the ClipSail download queue."
+  },
+  "allowClipSailTransfer": {
+    "message": "Open the ClipSail extension panel and enable transfers to ClipSail for Windows."
+  },
+  "downloadThisVideo": {
+    "message": "Download this video"
+  },
+  "checkingQualities": {
+    "message": "Checking available qualities…"
+  },
+  "youtubeTools": {
+    "message": "The ClipSail Windows package is missing its YouTube tools."
+  },
+  "youtubeUnavailable": {
+    "message": "No supported YouTube quality is available for this video."
+  },
+  "connectClipSail": {
+    "message": "Open ClipSail for Windows and select Connect Firefox / Zen."
+  },
+  "sourceChanged": {
+    "message": "This file is no longer available at the selected quality. Refresh the page and try again."
+  },
+  "sourceAccess": {
+    "message": "Firefox did not grant access to this file’s site. Check the extension permissions."
+  },
+  "app": {
+    "message": "ClipSail"
+  },
+  "description": {
+    "message": "Send videos, images and audio from Firefox to the ClipSail download queue."
+  },
+  "checking": {
+    "message": "Checking this tab…"
+  },
+  "permission": {
+    "message": "Open ClipSail's permissions in Firefox and enable access to websites."
+  },
+  "inspectionFailed": {
+    "message": "Could not check this tab. Reload the web page and open ClipSail again."
+  },
+  "openSite": {
+    "message": "Open the page with the video and try again."
+  },
+  "unavailable": {
+    "message": "No supported files found. If the player is still loading, start playback."
+  },
+  "playFirst": {
+    "message": "Press Play, then select Download again."
+  },
+  "chooseQuality": {
+    "message": "Choose video quality"
+  },
+  "copyVideoLink": {
+    "message": "Copy video link"
+  },
+  "videoLinkCopied": {
+    "message": "Copied. Paste the link into ClipSail for Windows."
+  },
+  "videoLinkCopyFailed": {
+    "message": "Copy the link from the browser address bar."
+  },
+  "protected": {
+    "message": "This video is protected by DRM."
+  },
+  "download": {
+    "message": "Download"
+  },
+  "downloadNamed": {
+    "message": "Download $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "downloadFailed": {
+    "message": "Firefox could not start the download. Check whether the file is still available on the site."
+  },
+  "sharingDescription": {
+    "message": "Allow the extension to send selected media links and their site to ClipSail on this PC."
+  },
+  "sharingToggle": {
+    "message": "Allow transfers to ClipSail for Windows"
+  },
+  "sharingOn": {
+    "message": "Transfers to ClipSail are on."
+  },
+  "sharingOff": {
+    "message": "Transfers to ClipSail are off."
+  },
+  "sharingFailed": {
+    "message": "Could not change transfer permissions. Check the extension permissions in Firefox."
+  },
+  "all": {
+    "message": "All"
+  },
+  "audio": {
+    "message": "Audio"
+  },
+  "batchFailed": {
+    "message": "Some files could not be downloaded. They remain selected."
+  },
+  "clearAll": {
+    "message": "Clear selection"
+  },
+  "disableGlobal": {
+    "message": "Hide everywhere"
+  },
+  "disablePage": {
+    "message": "Hide on this page"
+  },
+  "disableSite": {
+    "message": "Hide on this site"
+  },
+  "downloadSelected": {
+    "message": "Download selected"
+  },
+  "enableGlobal": {
+    "message": "Show everywhere"
+  },
+  "enablePage": {
+    "message": "Show on this page"
+  },
+  "enableSite": {
+    "message": "Show on this site"
+  },
+  "floatingButtons": {
+    "message": "Floating buttons"
+  },
+  "highest": {
+    "message": "Highest · $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "images": {
+    "message": "Images"
+  },
+  "mediaType": {
+    "message": "Media type"
+  },
+  "qualityNamed": {
+    "message": "Download quality for $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "selectAll": {
+    "message": "Select all"
+  },
+  "selectNamed": {
+    "message": "Select $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "videos": {
+    "message": "Video"
+  }
+}

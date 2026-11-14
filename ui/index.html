@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipSail</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><img src="icon.svg" width="24" height="24" alt=""><span data-t="app"></span></div>
+    <label id="savedSearchBox" class="url-field" hidden><span data-icon="search"></span><input id="savedSearch" type="search" autocomplete="off"></label>
+    <div class="app-controls">
+      <button id="updatesButton" class="icon-button" type="button" aria-haspopup="dialog"><span data-icon="retry"></span></button>
+      <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option></select>
+    </div>
+  </header>
+  <div class="shell">
+  <nav id="tabs" role="tablist" aria-orientation="vertical">
+    <button id="findTab" role="tab" aria-controls="findPanel" aria-selected="true"><span data-icon="search"></span></button>
+    <button id="queueTab" role="tab" aria-controls="queuePanel" aria-selected="false" tabindex="-1"><span data-icon="download"></span><span id="queueCount" class="count" hidden></span></button>
+    <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span data-icon="image"></span></button>
+  </nav>
+
+  <main>
+    <section id="findPanel" role="tabpanel" aria-labelledby="findTab">
+      <form id="searchForm" class="search">
+        <label for="url" data-t="pageUrl"></label>
+        <div class="search-row">
+          <div class="url-field"><span data-icon="link"></span><input id="url" type="url" required aria-describedby="searchError" maxlength="8192" placeholder="https://example.com" spellcheck="false"></div>
+          <button id="searchButton" class="primary" type="submit"><span data-icon="search"></span><span data-t="search"></span></button>
+        </div>
+        <label class="collection-option"><input id="scanCollection" type="checkbox"><span data-t="scanCollection"></span></label>
+        <p id="searchError" class="error" role="alert" hidden></p>
+        <button id="openBlockedPage" type="button" data-t="openInBrowser" hidden></button>
+      </form>
+      <div class="workspace">
+        <section class="results" aria-labelledby="resultsTitle">
+          <div class="panel-head">
+            <div class="head-title"><h1 id="resultsTitle" data-t="results"></h1><span id="resultCount" class="count" hidden></span></div>
+            <label class="select-all" id="allControl" hidden><input id="selectAll" type="checkbox"><span data-t="selectAll"></span></label>
+          </div>
+          <div id="filters" class="filters" hidden></div>
+          <details id="mediaFilters" class="media-filters" hidden>
+            <summary data-t="moreFilters"></summary>
+            <div class="media-filter-fields">
+              <label><span data-t="size"></span><select id="filterSize"></select></label>
+              <label><span data-t="duration"></span><select id="filterDuration"></select></label>
+              <label><span data-t="dimensions"></span><select id="filterResolution"></select></label>
+              <button type="button" id="resetMediaFilters" data-t="resetFilters"></button>
+            </div>
+          </details>
+          <p id="filterStatus" class="muted" role="status" hidden></p>
+          <p id="collectionStatus" class="muted" role="status" hidden></p>
+          <div id="resultsStatus" class="empty" role="status"></div>
+          <div class="gallery-layout">
+            <div id="gallery" class="gallery" hidden></div>
+            <aside id="findDetails" class="file-details" hidden></aside>
+          </div>
+        </section>
+      </div>
+      <footer class="selection">
+        <div class="destination"><span data-icon="folder"></span><div><span class="muted" data-t="destination"></span><div id="folderPath" class="path"></div></div></div>
+        <button id="pickFolder" type="button" data-t="change"></button>
+        <span id="selectionCount" class="muted"></span>
+        <button id="enqueue" class="primary" type="button" disabled><span data-icon="download"></span><span data-t="downloadSelected"></span></button>
+      </footer>
+    </section>
+    <section id="savedPanel" role="tabpanel" aria-labelledby="savedTab" hidden>
+      <div class="saved-header">
+        <div><h1><span data-icon="image"></span><span data-t="savedGallery"></span></h1><p id="savedCount" class="muted" aria-live="polite"></p></div>
+        <div class="saved-commands">
+          <label class="saved-command" id="savedFilterControl" hidden><span data-icon="filter"></span><select id="savedFilters"></select></label>
+          <label class="saved-command" id="savedSortControl" hidden><span data-icon="sort"></span><select id="savedSort"><option value="newest" data-t="newest"></option><option value="oldest" data-t="oldest"></option></select></label>
+          <button type="button" id="refreshSaved" class="icon-button"><span data-icon="retry"></span></button>
+        </div>
+      </div>
+      <div id="savedStatus" class="empty" role="status"></div>
+      <div class="gallery-layout saved-layout">
+        <div id="savedStream" hidden>
+          <div id="savedGallery"></div>
+          <nav id="savedTimeline" class="saved-timeline" hidden></nav>
+        </div>
+        <aside id="savedDetails" class="file-details" hidden></aside>
+      </div>
+    </section>
+
+    <section id="queuePanel" role="tabpanel" aria-labelledby="queueTab" hidden>
+      <div class="panel-head queue-head">
+        <h1 data-t="downloads"></h1>
+        <span id="queueSummary" class="muted"></span>
+        <button id="connectFirefox" type="button" data-t="connectFirefox"></button>
+      </div>
+      <div class="queue-toolbar" role="group" aria-labelledby="queueTab">
+        <button id="queueAdd" type="button" class="primary"><span data-icon="link"></span><span data-t="addAddress"></span></button>
+        <button id="queueResume" type="button" disabled><span data-icon="play"></span><span data-t="resume"></span></button>
+        <button id="queuePause" type="button" disabled><span data-icon="pause"></span><span data-t="pause"></span></button>
+        <button id="queueOpen" type="button" disabled><span data-icon="folder"></span><span data-t="openFolder"></span></button>
+        <button id="queueRemove" type="button" disabled><span data-icon="close"></span><span data-t="remove"></span></button>
+      </div>
+      <div id="queueError" class="error" role="alert" hidden></div>
+      <div class="queue-workspace">
+        <div id="queueCategories" role="group" aria-label="">
+          <button data-category="all" data-t="allDownloads" aria-pressed="true"></button>
+          <button data-category="unfinished" data-t="unfinishedDownloads" aria-pressed="false"></button>
+          <button data-category="completed" data-t="completedDownloads" aria-pressed="false"></button>
+          <button data-category="video" data-t="videos" aria-pressed="false"></button>
+        </div>
+        <div class="queue-list">
+          <table id="queueTable" aria-labelledby="queueTab">
+            <thead><tr>
+              <th scope="col"><button data-sort="name" data-t="fileName"></button></th>
+              <th scope="col"><button data-sort="total" data-t="size"></button></th>
+              <th scope="col"><button data-sort="status" data-t="downloadStatus"></button></th>
+              <th scope="col"><button data-sort="speed" data-t="speed"></button></th>
+            </tr></thead>
+            <tbody id="jobs"></tbody>
+          </table>
+          <div id="queueEmpty" class="queue-empty muted"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+  </div>
+  <div id="notice" role="status" aria-live="polite" class="notice" hidden></div>
+  <dialog id="updatesDialog" aria-labelledby="updatesTitle">
+    <h2 id="updatesTitle" data-t="updates"></h2>
+    <p id="updateStatus" role="status"></p>
+    <form class="dialog-actions" method="dialog">
+      <button type="button" id="updateReleases" data-t="releasePage" hidden></button>
+      <button type="button" id="installUpdate" class="primary" data-t="updateInstall" hidden></button>
+      <button data-t="close" autofocus></button>
+    </form>
+  </dialog>
+  <dialog id="removeDialog" aria-labelledby="removeQuestion"><form method="dialog"><p id="removeQuestion" data-t="confirmRemove"></p><div class="dialog-actions"><button value="cancel" autofocus data-t="cancel"></button><button value="remove" data-t="remove"></button></div></form></dialog>
+  <dialog id="browserSave" aria-labelledby="browserSaveTitle">
+    <form id="browserSaveForm">
+      <h2 id="browserSaveTitle" data-t="saveVideo"></h2>
+      <p id="browserSaveSource" class="muted"></p>
+      <div id="browserSaveQuality" hidden></div>
+      <p id="browserQualityStatus" class="muted" role="status" hidden></p>
+      <label><span data-t="fileName"></span><input id="browserSaveName" type="text" maxlength="120" required autofocus></label>
+      <div class="save-destination">
+        <label><span data-t="destination"></span><input id="browserSaveFolder" readonly></label>
+        <button id="browserPickFolder" type="button" data-t="change"></button>
+      </div>
+      <p id="browserSaveError" class="error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="browserCancel" data-t="cancel"></button>
+        <button type="submit" value="later" data-t="downloadLater"></button>
+        <button type="submit" value="now" class="primary" data-t="downloadNow"></button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="zoom" aria-labelledby="zoomTitle">
+    <header class="preview-header">
+      <h2 id="zoomTitle" aria-live="polite"></h2>
+      <button id="closeZoom" class="icon-button" type="button" autofocus><span data-icon="close"></span></button>
+    </header>
+    <div id="zoomContent">
+      <div id="zoomMedia"></div>
+      <nav id="previewRail" class="preview-rail" hidden>
+        <button id="previousPreview" class="icon-button" type="button" aria-keyshortcuts="ArrowLeft"><span data-icon="previous"></span></button>
+        <div id="previewStrip" class="preview-strip"></div>
+        <button id="nextPreview" class="icon-button" type="button" aria-keyshortcuts="ArrowRight"><span data-icon="next"></span></button>
+      </nav>
+      <div id="previewToolbar" class="preview-toolbar">
+        <div id="zoomActions" class="preview-actions"></div>
+        <label id="previewMark"><input id="previewCheck" type="checkbox"><span data-t="selectForDownload"></span></label>
+      </div>
+      <div id="zoomDetails"></div>
+    </div>
+  </dialog>
+</body>
+</html>
