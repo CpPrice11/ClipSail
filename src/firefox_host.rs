@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod firefox;
+mod paths;
 // The native host only uses the YouTube format lookup from these shared modules.
 #[allow(dead_code)]
 mod discovery;
@@ -12,7 +13,9 @@ use std::{
     io::{self, Read, Write},
 };
 
-use firefox::{ADDON_ID, BrowserStatus, MAX_BYTES, Report, VideoRequest, is_youtube_video};
+use firefox::{
+    ADDON_ID, BrowserStatus, CHROME_ORIGIN, MAX_BYTES, Report, VideoRequest, is_youtube_video,
+};
 use serde::Deserialize;
 
 const MAX_JOBS: usize = 100;
@@ -88,13 +91,8 @@ fn accept_video(video: &VideoRequest) -> Option<()> {
     use std::os::windows::process::CommandExt;
     video.validate()?;
     let dir = firefox::incoming_directory()?;
-    #[cfg(debug_assertions)]
-    let test_directory =
-        std::env::var_os("MEDIA_DOWNLOADER_TEST_DATA").map(std::path::PathBuf::from);
-    #[cfg(not(debug_assertions))]
-    let test_directory: Option<std::path::PathBuf> = None;
-    let app_data = test_directory.as_deref().unwrap_or(dir.parent()?.parent()?);
-    let folder = youtube::app_folder()?;
+    let app_data = dir.parent()?.parent()?;
+    let folder = paths::app_folder()?;
     let app = folder.join("ClipSail.exe");
     let app = if app.is_file() {
         app
@@ -173,8 +171,14 @@ fn accept_video(video: &VideoRequest) -> Option<()> {
     None
 }
 
+fn authorized_browser(first: Option<&std::ffi::OsStr>, second: Option<&std::ffi::OsStr>) -> bool {
+    first == Some(std::ffi::OsStr::new(CHROME_ORIGIN))
+        || second == Some(std::ffi::OsStr::new(ADDON_ID))
+}
+
 fn main() -> io::Result<()> {
-    if std::env::args_os().nth(2).as_deref() != Some(std::ffi::OsStr::new(ADDON_ID)) {
+    let mut args = std::env::args_os().skip(1);
+    if !authorized_browser(args.next().as_deref(), args.next().as_deref()) {
         return Ok(());
     }
     let response = match read_payload(&mut io::stdin().lock()) {
@@ -207,6 +211,23 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permits_only_the_expected_chrome_and_firefox_extensions() {
+        use std::ffi::OsStr;
+        assert!(authorized_browser(Some(OsStr::new(CHROME_ORIGIN)), None));
+        assert!(authorized_browser(
+            Some(OsStr::new("host.json")),
+            Some(OsStr::new(ADDON_ID))
+        ));
+        assert!(!authorized_browser(
+            Some(OsStr::new(
+                "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+            )),
+            None
+        ));
+        assert!(!authorized_browser(None, None));
+    }
 
     fn read_report(input: &mut impl Read) -> Option<Report> {
         parse_report(&read_payload(input)?)

@@ -198,32 +198,17 @@ pub async fn resolve(id: &str, format_id: Option<&str>) -> AppResult<Source> {
         })
 }
 
-pub fn app_folder() -> Option<std::path::PathBuf> {
-    let executable = std::env::current_exe().ok()?;
-    let folder = executable.parent()?;
-    Some(
-        if folder.file_name().is_some_and(|name| name == "tools")
-            && executable
-                .file_name()
-                .is_some_and(|name| name == "media-downloader-firefox.exe")
-        {
-            folder.parent()?
-        } else {
-            folder
-        }
-        .to_path_buf(),
-    )
-}
-
 pub fn ffmpeg() -> AppResult<std::path::PathBuf> {
-    let path = app_folder()
+    let path = crate::paths::app_folder()
         .ok_or("youtubeTools")?
         .join("tools/ffmpeg/ffmpeg.exe");
     path.is_file().then_some(path).ok_or("youtubeTools")
 }
 
 async fn extract(id: &str) -> AppResult<Extracted> {
-    let tools = app_folder().ok_or("youtubeTools")?.join("tools");
+    let tools = crate::paths::app_folder()
+        .ok_or("youtubeTools")?
+        .join("tools");
     let runtime = tools.join("qjs.exe");
     if !runtime.is_file() {
         return Err("youtubeTools");
@@ -296,6 +281,7 @@ pub async fn find(id: &str) -> AppResult<Vec<Media>> {
     Ok(vec![
         Media {
             url: watch_url(id),
+            source_origin: None,
             name: data.title.chars().take(120).collect(),
             kind: Kind::Video,
             size: best.size,
@@ -309,6 +295,7 @@ pub async fn find(id: &str) -> AppResult<Vec<Media>> {
         },
         Media {
             url: poster.clone(),
+            source_origin: None,
             name: "hqdefault.jpg".to_owned(),
             kind: Kind::Image,
             size: None,

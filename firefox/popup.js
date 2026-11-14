@@ -1,10 +1,11 @@
-const t = key => browser.i18n.getMessage(key);
+const api = globalThis.browser ?? globalThis.chrome;
+const t = key => api.i18n.getMessage(key);
 const status = document.getElementById("status");
 const list = document.getElementById("videos");
 const share = document.getElementById("share");
 const sharingStatus = document.getElementById("sharingStatus");
-const sharing = { data_collection: ["websiteActivity"] };
-document.documentElement.lang = browser.i18n.getUILanguage();
+const sharing = typeof api.runtime.getBrowserInfo === "function" ? { data_collection: ["websiteActivity"] } : null;
+document.documentElement.lang = api.i18n.getUILanguage();
 document.title = t("app");
 for (const element of document.querySelectorAll("[data-message]")) {
   element.textContent = t(element.dataset.message);
@@ -16,7 +17,7 @@ const selected = new Set();
 const choices = new Map();
 let rows = [];
 let settingsTab;
-const send = (tab, message) => browser.tabs.sendMessage(tab.id, message, { frameId: 0 });
+const send = (tab, message) => api.tabs.sendMessage(tab.id, message, { frameId: 0 });
 const updateBulk = () => { bulk.disabled = selected.size === 0; };
 
 async function download(tab, id) {
@@ -29,7 +30,7 @@ function addItem(tab, item) {
   const check = document.createElement("input");
   check.type = "checkbox";
   check.checked = selected.has(item.id);
-  check.setAttribute("aria-label", browser.i18n.getMessage("selectNamed", item.name));
+  check.setAttribute("aria-label", api.i18n.getMessage("selectNamed", item.name));
   check.addEventListener("change", () => {
     if (check.checked) selected.add(item.id);
     else selected.delete(item.id);
@@ -44,7 +45,7 @@ function addItem(tab, item) {
   name.textContent = item.name;
   button.type = "button";
   button.textContent = t("download");
-  button.setAttribute("aria-label", browser.i18n.getMessage("downloadNamed", item.name));
+  button.setAttribute("aria-label", api.i18n.getMessage("downloadNamed", item.name));
   button.addEventListener("click", async () => {
     button.disabled = true;
     rowStatus.textContent = "";
@@ -66,11 +67,11 @@ function addItem(tab, item) {
   media.append(details, rowStatus);
   if (item.variants?.length > 1) {
     const select = document.createElement("select");
-    select.setAttribute("aria-label", browser.i18n.getMessage("qualityNamed", item.name));
+    select.setAttribute("aria-label", api.i18n.getMessage("qualityNamed", item.name));
     for (const [index, variant] of item.variants.entries()) {
       const option = document.createElement("option");
       const label = [variant.height ? variant.height + "p" : "", variant.ext.toUpperCase()].filter(Boolean).join(" · ");
-      option.textContent = index === 0 ? browser.i18n.getMessage("highest", label) : label;
+      option.textContent = index === 0 ? api.i18n.getMessage("highest", label) : label;
       option.value = variant.value;
       select.append(option);
     }
@@ -97,23 +98,23 @@ async function initButtons(tab, hideHere) {
   const site = document.getElementById("toggleSite");
   const global = document.getElementById("toggleGlobal");
   const refresh = async () => {
-    const { buttons = {} } = await browser.storage.local.get("buttons");
+    const { buttons = {} } = await api.storage.local.get("buttons");
     page.textContent = t(hideHere ? "enablePage" : "disablePage");
     site.textContent = t(buttons.sites?.[hostname] === true ? "enableSite" : "disableSite");
     global.textContent = t(buttons.off ? "enableGlobal" : "disableGlobal");
   };
   page.onclick = async () => { hideHere = await send(tab, { type: "togglePage" }); await refresh(); };
   site.onclick = async () => {
-    const { buttons = {} } = await browser.storage.local.get("buttons");
+    const { buttons = {} } = await api.storage.local.get("buttons");
     const sites = { ...buttons.sites };
     if (sites[hostname] === true) delete sites[hostname];
     else sites[hostname] = true;
-    await browser.storage.local.set({ buttons: { ...buttons, sites } });
+    await api.storage.local.set({ buttons: { ...buttons, sites } });
     await refresh();
   };
   global.onclick = async () => {
-    const { buttons = {} } = await browser.storage.local.get("buttons");
-    await browser.storage.local.set({ buttons: { ...buttons, off: !buttons.off } });
+    const { buttons = {} } = await api.storage.local.get("buttons");
+    await api.storage.local.set({ buttons: { ...buttons, off: !buttons.off } });
     await refresh();
   };
   await refresh();
@@ -123,7 +124,7 @@ async function initButtons(tab, hideHere) {
 async function inspect(tab) {
   const result = await send(tab, { type: "inspect" }).catch(async () => {
     // A tab already open during installation may not have the content script yet.
-    await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    await api.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
     return send(tab, { type: "inspect" });
   });
   settingsTab = tab;
@@ -148,7 +149,7 @@ async function inspect(tab) {
         const label = [height ? height + "p" : "", variant.extension.toUpperCase()].filter(Boolean).join(" · ");
         const button = document.createElement("button");
         button.type = "button";
-        button.textContent = index === 0 ? browser.i18n.getMessage("highest", label) : label;
+        button.textContent = index === 0 ? api.i18n.getMessage("highest", label) : label;
         button.onclick = async () => {
           for (const control of qualityControls.children) control.disabled = true;
           try {
@@ -216,14 +217,14 @@ bulk.onclick = async () => {
   render(settingsTab);
 };
 async function init() {
-  const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+  const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
     status.textContent = t("openSite");
     return;
   }
   const url = new URL(tab.url);
   const site = url.protocol + "//" + url.hostname + "/*";
-  if (!await browser.permissions.contains({ origins: [site] })) {
+  if (!await api.permissions.contains({ origins: [site] })) {
     status.textContent = t("permission");
     return;
   }
@@ -232,22 +233,22 @@ async function init() {
 void init().catch(() => { status.textContent = t("inspectionFailed"); });
 
 async function initSharing() {
-  if ((await browser.runtime.getPlatformInfo()).os !== "win") return;
-  const { videoTransfer } = await browser.storage.local.get("videoTransfer");
-  share.setAttribute("aria-pressed", String(videoTransfer === true && await browser.permissions.contains(sharing)));
+  if ((await api.runtime.getPlatformInfo()).os !== "win") return;
+  const { videoTransfer } = await api.storage.local.get("videoTransfer");
+  share.setAttribute("aria-pressed", String(videoTransfer === true && (!sharing || await api.permissions.contains(sharing))));
   document.getElementById("connection").hidden = false;
   share.addEventListener("click", async () => {
     const enabled = share.getAttribute("aria-pressed") === "true";
     share.disabled = true;
     try {
       if (enabled) {
-        await browser.storage.local.remove("videoTransfer");
-        await browser.permissions.remove(sharing);
+        await api.storage.local.remove("videoTransfer");
+        if (sharing) await api.permissions.remove(sharing);
       } else {
-        if (!await browser.permissions.request(sharing)) return;
-        await browser.storage.local.set({ videoTransfer: true });
+        if (sharing && !await api.permissions.request(sharing)) return;
+        await api.storage.local.set({ videoTransfer: true });
       }
-      const allowed = !enabled && await browser.permissions.contains(sharing);
+      const allowed = !enabled && (!sharing || await api.permissions.contains(sharing));
       share.setAttribute("aria-pressed", String(allowed));
       sharingStatus.textContent = t(allowed ? "sharingOn" : "sharingOff");
     } catch {

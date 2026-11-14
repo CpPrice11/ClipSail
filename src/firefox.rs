@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub const MAX_BYTES: usize = 64 * 1024;
 pub const ADDON_ID: &str = "{86208952-d93f-483a-bace-e85ac03124dc}";
+pub const CHROME_ORIGIN: &str = "chrome-extension://ancbiejhldiaclhifkliooddigkpkbgn/";
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +96,9 @@ pub fn incoming_directory() -> Option<PathBuf> {
 }
 
 pub fn directory() -> Option<PathBuf> {
+    if let Some(root) = crate::paths::portable_root() {
+        return Some(root.join("data/firefox"));
+    }
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("MEDIA_DOWNLOADER_TEST_DATA") {
         return Some(PathBuf::from(path).join("firefox"));

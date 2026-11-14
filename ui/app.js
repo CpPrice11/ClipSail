@@ -1,14 +1,17 @@
 import uk from "./uk.js";
 import en from "./en.js";
+import ru from "./ru.js";
 
 const $ = id => document.getElementById(id);
-const locales = { uk, en };
-let language = localStorage.getItem("language") === "en" ? "en" : "uk";
+const locales = { uk, en, ru };
+const savedLanguage = localStorage.getItem("language");
+let language = Object.hasOwn(locales, savedLanguage) ? savedLanguage : "uk";
 const t = (key, values = {}) => (locales[language][key] ?? en[key] ?? locales[language].unknown)
   .replace(/\{(\w+)\}/g, (_, name) => values[name] ?? "");
 const invoke = (command, args) => window.__TAURI__.core.invoke(command, args);
 
 const icons = {
+  menu: "M4 6h16M4 12h16M4 18h16",
   download: "M12 3v12m-5-5 5 5 5-5M5 16v4h14v-4",
   link: "M10 13a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-2 2m2 5a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l2-2",
   search: "M16 16l5 5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z",
@@ -84,6 +87,21 @@ const errorKey = error => typeof error === "string" ? error : "unknown";
 
 const tabs = ["find", "queue", "saved"];
 
+function renderNav() {
+  const expanded = $("shell").classList.contains("nav-expanded");
+  const toggle = $("navToggle");
+  const label = t(expanded ? "collapseNavigation" : "expandNavigation");
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute("aria-label", label);
+  toggle.title = label;
+}
+
+$("shell").classList.toggle("nav-expanded", localStorage.getItem("navExpanded") === "true");
+$("navToggle").addEventListener("click", () => {
+  localStorage.setItem("navExpanded", String($("shell").classList.toggle("nav-expanded")));
+  renderNav();
+});
+
 function showTab(tab, focus = false) {
   app.tab = tab;
   $("savedSearchBox").hidden = tab !== "saved";
@@ -157,8 +175,8 @@ function loadImage(img, url, priority = false) {
 }
 
 const galleryFilters = [
-  ["all", "mainMedia"], ["image", "images"], ["video", "videos"],
-  ["gif", "gif"], ["audio", "audioList"], ["assets", "pageAssets"]
+  ["all", "mainMedia"], ["video", "videos"], ["image", "images"],
+  ["gif", "gif"], ["assets", "pageAssets"], ["audio", "audioList"]
 ];
 
 const mediaFilterFields = [
@@ -202,7 +220,7 @@ function translateMediaFilters() {
 }
 
 function inspectSize(item) {
-  item.inspect ??= invoke("inspect_media", { url: item.url }).catch(() => null);
+  item.inspect ??= invoke("inspect_media", { url: item.url, sourceOrigin: item.source_origin }).catch(() => null);
   return item.inspect.then(size => { item.size ??= size; });
 }
 
@@ -332,7 +350,7 @@ function mediaThumbnail(item, className, { still = false } = {}) {
   return thumb;
 }
 
-function qualityPicker(item, onChange) {
+function qualityPicker(item) {
   const control = element("select");
   control.setAttribute("aria-label", t("qualityFor", { name: item.name }));
   for (const [index, quality] of item.qualities.entries()) {
@@ -348,7 +366,6 @@ function qualityPicker(item, onChange) {
   control.value = String(item.qualityIndex ?? 0);
   control.addEventListener("change", () => {
     item.qualityIndex = Number(control.value);
-    onChange?.(control.value);
   });
   const label = element("label", "card-quality");
   label.append(element("span", "", t("downloadQuality")), control);
@@ -402,7 +419,7 @@ function renderGallery() {
 
   $("filters").replaceChildren();
   for (const [kind, key] of galleryFilters) {
-    if (["audio", "assets"].includes(kind) && !app.items.some(item => matchesFilter(item, kind))) continue;
+    if (kind === "audio" && !app.items.some(item => matchesFilter(item, kind))) continue;
     const control = button(t(key), () => {
       app.filter = kind;
       void refreshMediaFilters();
@@ -466,7 +483,6 @@ function mediaCard(item) {
     title.title = item.name;
     open.replaceChildren(thumb, title, element("span", "card-type", t(item.preview_only ? "previewOnly" : item.kind)));
     card.append(open);
-    if (item.qualities?.length > 1) card.prepend(qualityPicker(item));
     if (item.preview_only) return card;
     const checkLabel = element("label", "card-check");
     const check = element("input");
@@ -960,13 +976,6 @@ function renderPreview(item) {
     controls.append(check, status);
     actions.append(controls);
   }
-  if (!item.local && item.qualities?.length > 1) {
-    actions.append(qualityPicker(item, value => {
-      const card = Array.from($("gallery").children).find(card => card.dataset.url === item.url);
-      const select = card?.querySelector(".card-quality select");
-      if (select) select.value = value;
-    }));
-  }
   const openSavedFile = item.local ? button(t("openSavedFile"), async () => {
     try { await invoke("open_saved_file", { id: item.id }); }
     catch (error) { notify(errorKey(error)); }
@@ -1009,12 +1018,21 @@ function renderPreview(item) {
           if (document.activeElement === document.body) play.focus();
         });
         player.addEventListener("loadedmetadata", () => updateMediaDetails(item, player, details));
-        player.src = item.url;
       }
       frame.replaceChildren(player);
-      if (directMedia) void player.play().catch(error => {
-        if (error.name === "NotAllowedError" && player.isConnected) play.hidden = false;
-      });
+      if (directMedia) {
+        const current = player;
+        const configure = !item.local ? invoke("set_preview_source", {
+          url: item.url, sourceOrigin: item.source_origin
+        }).catch(() => {}) : Promise.resolve();
+        void configure.then(() => {
+          if (!current.isConnected) return;
+          current.src = item.url;
+          return current.play().catch(error => {
+            if (error.name === "NotAllowedError" && current.isConnected) play.hidden = false;
+          });
+        });
+      }
     };
     const play = button(t(item.kind === "audio" ? "playAudio" : "playVideo"), start, "play");
     play.classList.add("primary");
@@ -1166,38 +1184,71 @@ $("pickFolder").addEventListener("click", async () => {
   } catch (error) { notify(errorKey(error)); }
   finally { $("pickFolder").disabled = false; }
 });
-$("enqueue").addEventListener("click", async () => {
+const downloadOptions = $("downloadOptions");
+let pendingDownloads = [];
+
+$("enqueue").addEventListener("click", () => {
+  const items = app.items.filter(item => app.selected.has(item.url))
+    .map(item => ({ ...item, qualityIndex: 0 }));
+  const variants = items.filter(item => item.qualities?.length > 1);
+  if (variants.length === 0) {
+    void downloadSelected(items);
+    return;
+  }
+  pendingDownloads = items;
+  $("downloadOptionsList").replaceChildren(...variants.map(item => {
+    const picker = qualityPicker(item);
+    picker.firstElementChild.textContent = item.name;
+    return picker;
+  }));
+  downloadOptions.showModal();
+  $("downloadOptionsList").querySelector("select").focus();
+});
+
+$("cancelDownloadOptions").addEventListener("click", () => downloadOptions.close());
+downloadOptions.addEventListener("close", () => {
+  pendingDownloads = [];
+  $("downloadOptionsList").replaceChildren();
+});
+$("downloadOptionsForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const items = pendingDownloads;
+  downloadOptions.close();
+  void downloadSelected(items);
+});
+
+async function downloadSelected(selection) {
+  if (app.submitting || !selection.length) return;
   app.submitting = true;
   updateSelection();
   try {
-    const items = app.items
-      .filter(item => app.selected.has(item.url))
-      .map(item => {
-        const quality = item.qualities?.[item.qualityIndex ?? 0];
-        return {
-          url: quality?.url ?? item.url,
-          name: item.name,
-          size: quality ? quality.size : item.size,
-          preview_only: item.preview_only,
-          format_id: quality?.format_id
-        };
-      });
+    const items = selection.map(item => {
+      const quality = item.qualities?.[item.qualityIndex ?? 0];
+      return {
+        url: quality?.url ?? item.url,
+        name: item.name,
+        size: quality ? quality.size : item.size,
+        preview_only: item.preview_only,
+        format_id: quality?.format_id,
+        source_origin: item.source_origin
+      };
+    });
     await invoke("enqueue", { items });
     app.selected.clear();
     showTab("queue", true);
   } catch (error) { notify(errorKey(error)); }
   finally { app.submitting = false; updateSelection(); }
-});
+}
 
 const jobNodes = new Map();
-$("connectFirefox").addEventListener("click", async event => {
+for (const [id, chrome] of [["connectFirefox", false], ["connectChrome", true]]) $(id).addEventListener("click", async event => {
   const control = event.currentTarget;
   control.disabled = true;
   try {
-    await invoke("connect_firefox");
-    notify("firefoxConnected");
+    await invoke("connect_firefox", { chrome });
+    notify(chrome ? "chromeConnected" : "firefoxConnected");
   } catch (error) {
-    notify(errorKey(error));
+    notify(chrome && errorKey(error) === "firefoxConnectError" ? "chromeConnectError" : errorKey(error));
   } finally {
     control.disabled = false;
   }
@@ -1471,6 +1522,12 @@ let updateStatus;
 let updateWorking = false;
 
 function renderUpdate() {
+  const version = $("appVersion");
+  version.hidden = !updateChannel?.version;
+  if (updateChannel?.version) {
+    version.textContent = `v${updateChannel.version}`;
+    version.title = t("appVersion", { version: updateChannel.version });
+  }
   const label = t(updateStatus ?? "updateChecking", { version: updateVersion ?? updateChannel?.version });
   $("updateStatus").textContent = label;
   $("updatesButton").toggleAttribute("data-ready", Boolean(updateVersion));
@@ -1489,6 +1546,7 @@ async function checkUpdates() {
   renderUpdate();
   try {
     updateChannel ??= await invoke("update_channel");
+    renderUpdate();
     if (updateChannel.kind === "pullora") updateStatus = "updatePullora";
     else if (updateChannel.kind === "portable") updateStatus = "updatePortable";
     else {
@@ -1545,6 +1603,7 @@ function translate() {
   renderQueue();
   renderFolder();
   renderUpdate();
+  renderNav();
 }
 $("language").value = language;
 $("language").addEventListener("change", event => {
@@ -1557,3 +1616,4 @@ void refreshQueue();
 setInterval(refreshQueue, 650);
 void checkUpdates();
 setInterval(() => { if (!updateVersion) void checkUpdates(); }, 6 * 60 * 60 * 1000);
+

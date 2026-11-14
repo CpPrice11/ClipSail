@@ -27,6 +27,8 @@ pub const GALLERY_LIMIT: usize = MAIN_MEDIA_LIMIT + PAGE_ASSET_LIMIT;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Media {
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
     pub name: String,
     pub kind: Kind,
     pub size: Option<u64>,
@@ -110,6 +112,11 @@ pub fn url(value: &str) -> AppResult<Url> {
     }
     url.set_fragment(None);
     Ok(url)
+}
+
+pub fn media_referer(source: &Url, target: &Url) -> Option<String> {
+    (source.scheme() != "https" || target.scheme() == "https")
+        .then(|| format!("{}/", source.origin().ascii_serialization()))
 }
 
 pub fn mime(headers: &HeaderMap) -> &str {
@@ -270,6 +277,23 @@ struct Html {
     next: RefCell<Vec<String>>,
     json_ld: RefCell<Vec<String>>,
     in_json_ld: Cell<bool>,
+    script: RefCell<Option<String>>,
+    players: RefCell<Vec<Player>>,
+}
+
+#[derive(Deserialize)]
+struct Player {
+    image_url: String,
+    #[serde(rename = "mediaDefinitions")]
+    sources: Vec<PlayerSource>,
+}
+
+#[derive(Deserialize)]
+struct PlayerSource {
+    format: String,
+    quality: Option<serde_json::Value>,
+    #[serde(rename = "videoUrl")]
+    url: String,
 }
 
 struct Candidate {
@@ -283,6 +307,7 @@ struct Candidate {
     page_asset: bool,
     video_group: Option<usize>,
     quality_height: Option<u32>,
+    meta_video: bool,
 }
 
 fn declared_quality(value: &str) -> Option<u32> {
@@ -305,12 +330,33 @@ impl TokenSink for Html {
                 }
                 return TokenSinkResult::Continue;
             }
+            Token::CharacterTokens(text) => {
+                if let Some(script) = self.script.borrow_mut().as_mut() {
+                    script.push_str(&text);
+                }
+                return TokenSinkResult::Continue;
+            }
             _ => return TokenSinkResult::Continue,
         };
         let name = tag.name.as_ref();
         if tag.kind == TagKind::EndTag {
             if name == "script" {
                 self.in_json_ld.set(false);
+                if let Some(script) = self.script.borrow_mut().take() {
+                    for assignment in script.split("var flashvars_").skip(1) {
+                        let Some((id, value)) = assignment.split_once('=') else {
+                            continue;
+                        };
+                        if !id.trim().bytes().all(|byte| byte.is_ascii_digit()) {
+                            continue;
+                        }
+                        let mut json =
+                            serde_json::Deserializer::from_str(value).into_iter::<Player>();
+                        if let Some(Ok(player)) = json.next() {
+                            self.players.borrow_mut().push(player);
+                        }
+                    }
+                }
             }
             if name == "a" {
                 self.anchor.replace(None);
@@ -405,6 +451,7 @@ impl TokenSink for Html {
                 .filter_map(attr)
                 .find_map(declared_quality)
                 .or_else(|| (name == "source").then_some(height).flatten()),
+                meta_video: name == "meta" && hint == Some(Kind::Video),
             });
         };
         match name {
@@ -412,6 +459,8 @@ impl TokenSink for Html {
                 if self.collect_links && attr("type") == Some("application/ld+json") {
                     self.json_ld.borrow_mut().push(String::new());
                     self.in_json_ld.set(true);
+                } else if attr("src").is_none() && !self.collect_links {
+                    self.script.replace(Some(String::new()));
                 }
                 return TokenSinkResult::RawData(ScriptData);
             }
@@ -572,6 +621,70 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             url
         })
         .collect();
+    let page_cover = page_image
+        .as_deref()
+        .and_then(|value| base.join(value).ok());
+    let player_sources = page.players.into_inner();
+    let primary = page_cover
+        .as_ref()
+        .filter(|cover| allowed(cover))
+        .and_then(|cover| {
+            let mut matching = player_sources
+                .iter()
+                .filter(|player| base.join(&player.image_url).ok().as_ref() == Some(cover));
+            let player = matching.next()?;
+            if matching.next().is_some() {
+                return None;
+            }
+            let mut direct = candidates.iter().filter_map(|item| {
+                let mut address = base.join(&item.link).ok()?;
+                address.set_fragment(None);
+                (item.meta_video
+                    && !embedded.contains(&address)
+                    && allowed(&address)
+                    && path_format(&address) == Some(("mp4", Kind::Video)))
+                .then_some(address)
+            });
+            let address = direct.next()?;
+            if direct.any(|other| other != address) {
+                return None;
+            }
+            let mut qualities: Vec<_> = player
+                .sources
+                .iter()
+                .take(32)
+                .filter_map(|variant| {
+                    if variant.format != "hls" {
+                        return None;
+                    }
+                    let quality = variant.quality.as_ref()?;
+                    let height = match quality {
+                        serde_json::Value::String(value) => declared_quality(value)?,
+                        serde_json::Value::Number(value) => declared_quality(&value.to_string())?,
+                        _ => return None,
+                    };
+                    let address = base.join(&variant.url).ok()?;
+                    if !allowed(&address)
+                        || !address.path().to_ascii_lowercase().ends_with(".m3u8")
+                        || (source.scheme() == "https" && address.scheme() != "https")
+                    {
+                        return None;
+                    }
+                    Some(Quality {
+                        url: Some(address.to_string()),
+                        format_id: None,
+                        extension: "mp4".to_owned(),
+                        width: None,
+                        height: Some(height),
+                        size: None,
+                    })
+                })
+                .collect();
+            qualities.sort_by_key(|quality| std::cmp::Reverse(quality.resolution()));
+            qualities.dedup_by_key(|quality| quality.resolution());
+            qualities.truncate(16);
+            Some((address, qualities))
+        });
     let mut seen = HashMap::new();
     let mut results: Vec<Media> = Vec::new();
     let mut groups = HashMap::<usize, Vec<(Media, Quality)>>::new();
@@ -597,13 +710,17 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             })
             .or_else(|| item.hint.map(|kind| ("", kind)))?;
         let preview_only = kind == Kind::Video && embedded.contains(&url);
+        let primary_video = primary.as_ref().filter(|(address, _)| *address == url);
+        if preview_only && item.meta_video && primary.is_some() {
+            return None;
+        }
         let preview = if matches!(kind, Kind::Image | Kind::Gif) {
             Some(url.to_string())
         } else {
             item.poster
                 .as_deref()
                 .or_else(|| {
-                    if preview_only {
+                    if preview_only || primary_video.is_some() {
                         page_image.as_deref()
                     } else {
                         None
@@ -613,7 +730,10 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 .filter(allowed)
                 .map(|v| v.to_string())
         };
-        let name = if let Some(title) = title.as_ref().filter(|_| preview_only) {
+        let name = if let Some(title) = title
+            .as_ref()
+            .filter(|_| preview_only || primary_video.is_some())
+        {
             title.clone()
         } else if extension.is_empty() {
             let segment = url
@@ -659,6 +779,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
         Some((
             Media {
                 url: url.to_string(),
+                source_origin: media_referer(source, &url),
                 name,
                 kind,
                 size: None,
@@ -669,8 +790,8 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 preview_only,
                 page_asset: kind != Kind::Audio
                     && !preview_only
-                    && (item.page_asset || extension == "ico" || asset_path(&url)),
-                qualities: Vec::new(),
+                    && (item.page_asset || matches!(extension, "ico" | "svg") || asset_path(&url)),
+                qualities: primary_video.map_or_else(Vec::new, |(_, qualities)| qualities.clone()),
             },
             group,
         ))
@@ -756,6 +877,7 @@ pub async fn find(client: &Client, value: &str) -> AppResult<Vec<Media>> {
     if let Some((extension, kind)) = response_format(&response) {
         return Ok(vec![Media {
             url: base.to_string(),
+            source_origin: None,
             name: media_name(&base, extension),
             kind,
             size: response.content_length(),
@@ -764,7 +886,7 @@ pub async fn find(client: &Client, value: &str) -> AppResult<Vec<Media>> {
             duration: None,
             preview: matches!(kind, Kind::Image | Kind::Gif).then(|| base.to_string()),
             preview_only: false,
-            page_asset: false,
+            page_asset: matches!(extension, "ico" | "svg"),
             qualities: Vec::new(),
         }]);
     }
@@ -828,6 +950,7 @@ fn structured_links(
                     .or_else(|| object.get("thumbnailUrl")?.as_array()?.first()?.as_str());
                 videos.push(Media {
                     url: link.to_string(),
+                    source_origin: media_referer(base, &link),
                     name: field("name")
                         .filter(|name| !name.trim().is_empty())
                         .map(|name| name.chars().take(120).collect())
@@ -1047,9 +1170,22 @@ pub async fn read_html(response: &mut Response) -> AppResult<String> {
     Ok(charset.decode(&data).0.into_owned())
 }
 
-pub async fn inspect(client: &Client, value: &str) -> AppResult<Option<u64>> {
-    let response = client
-        .head(url(value)?)
+pub async fn inspect(
+    client: &Client,
+    value: &str,
+    source_origin: Option<&str>,
+) -> AppResult<Option<u64>> {
+    let target = url(value)?;
+    let referer = source_origin
+        .map(url)
+        .transpose()?
+        .and_then(|source| media_referer(&source, &target));
+    let request = client.head(target);
+    let request = match referer {
+        Some(origin) => request.header(reqwest::header::REFERER, origin),
+        None => request,
+    };
+    let response = request
         .send()
         .await
         .map_err(|_| "network")?
@@ -1088,7 +1224,7 @@ pub async fn preview(client: &Client, value: &str) -> AppResult<String> {
     ))
 }
 
-async fn read_limited(
+pub(crate) async fn read_limited(
     response: &mut Response,
     limit: usize,
     error: &'static str,
@@ -1106,6 +1242,54 @@ async fn read_limited(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn associates_page_player_with_its_cover_and_stream_qualities() {
+        let source = Url::parse("https://example.org/watch").unwrap();
+        let items = parse(
+            r#"
+            <meta property="og:title" content="Sample">
+            <meta property="og:image" content="/cover.jpg">
+            <meta property="og:video" content="/direct.mp4">
+            <meta property="og:video:type" content="video/mp4">
+            <meta property="og:video:url" content="/embed">
+            <meta property="og:video:type" content="text/html">
+            <script>var flashvars_123 = {
+                "image_url":"/cover.jpg",
+                "mediaDefinitions":[
+                    {"format":"hls","quality":"240","videoUrl":"/low.m3u8"},
+                    {"format":"hls","quality":1080,"videoUrl":"/high.m3u8"},
+                    {"format":"mp4","quality":"","videoUrl":"/api/media"}
+                ]};
+            </script>
+            <video src="/related.mp4"></video>
+        "#,
+            &source,
+        );
+        let videos: Vec<_> = items
+            .iter()
+            .filter(|item| item.kind == Kind::Video)
+            .collect();
+        assert_eq!(videos.len(), 2);
+        let main = videos.iter().find(|item| item.name == "Sample").unwrap();
+        assert!(!main.preview_only && main.url.ends_with("/direct.mp4"));
+        assert_eq!(
+            main.preview.as_deref(),
+            Some("https://example.org/cover.jpg")
+        );
+        assert_eq!(
+            main.qualities
+                .iter()
+                .map(Quality::resolution)
+                .collect::<Vec<_>>(),
+            [1080, 240]
+        );
+        let related = videos
+            .iter()
+            .find(|item| item.url.ends_with("/related.mp4"))
+            .unwrap();
+        assert!(related.preview.is_none() && related.qualities.is_empty());
+    }
 
     #[test]
     fn groups_sources_of_one_player_in_quality_order() {
@@ -1191,12 +1375,12 @@ mod tests {
             entries,
             [
                 ("photo.jpg", Kind::Image, false),
-                ("art.svg", Kind::Image, false),
                 ("animation.gif", Kind::Gif, false),
                 ("feature.mp4", Kind::Video, false),
                 ("tall.png", Kind::Image, false),
                 ("mark", Kind::Image, true),
                 ("still.png", Kind::Image, true),
+                ("art.svg", Kind::Image, true),
                 ("spinner.gif", Kind::Gif, true),
                 ("01.png", Kind::Image, true),
                 ("crown.webp", Kind::Image, true),
@@ -1204,7 +1388,7 @@ mod tests {
             ]
         );
         assert_eq!(mime_format("image/gif"), Some(("gif", Kind::Gif)));
-        assert!(result[2].preview.is_some());
+        assert!(result[1].preview.is_some());
         assert!(result[7].preview.is_some());
     }
 

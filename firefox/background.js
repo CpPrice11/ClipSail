@@ -1,14 +1,15 @@
 const host = "local.media.downloader";
-const sharing = { data_collection: ["websiteActivity"] };
+const api = globalThis.browser ?? globalThis.chrome;
+const sharing = typeof api.runtime.getBrowserInfo === "function" ? { data_collection: ["websiteActivity"] } : null;
 
-browser.permissions.onRemoved.addListener(change => {
+api.permissions.onRemoved.addListener(change => {
   if (change.data_collection?.includes("websiteActivity")) {
-    void browser.storage.local.remove("videoTransfer").catch(() => {});
+    void api.storage.local.remove("videoTransfer").catch(() => {});
   }
 });
-browser.runtime.onInstalled.addListener(() => {
+api.runtime.onInstalled.addListener(() => {
   // Remove the dynamically registered script used by 0.1.11 and earlier.
-  void browser.scripting.unregisterContentScripts({ ids: ["video"] }).catch(() => {});
+  void api.scripting.unregisterContentScripts({ ids: ["video"] }).catch(() => {});
 });
 
 async function startDownload(message, sender) {
@@ -25,7 +26,7 @@ async function startDownload(message, sender) {
     && value === "https://www.youtube.com/watch?v=" + pageVideo;
   if (!/^https?:$/.test(page.protocol) || !/^https?:$/.test(url.protocol) || url.username || url.password
       || (!youtube && !/\.(?:mp4|webm|jpe?g|png|webp|gif|avif|mp3|m4a|ogg|oga|wav)$/i.test(url.pathname))
-      || !await browser.permissions.contains({
+      || !await api.permissions.contains({
         origins: [page, url].map(address => address.protocol + "//" + address.hostname + "/*")
       })) return { error: "sourceAccess" };
   if (type === "saveVideo" || type === "videoQualities") {
@@ -34,16 +35,16 @@ async function startDownload(message, sender) {
       || (formatId !== undefined && (!youtube || typeof formatId !== "string" || !/^[\w-]{1,48}(?:\+[\w-]{1,48})?$/.test(formatId)))) {
       return { error: "sourceChanged" };
     }
-    const { videoTransfer } = await browser.storage.local.get("videoTransfer");
-    if (videoTransfer !== true || !await browser.permissions.contains(sharing)) return { error: "allowClipSailTransfer" };
+    const { videoTransfer } = await api.storage.local.get("videoTransfer");
+    if (videoTransfer !== true || (sharing && !await api.permissions.contains(sharing))) return { error: "allowClipSailTransfer" };
     try {
       if (type === "videoQualities") {
-        const result = await browser.runtime.sendNativeMessage(host, { youtube_qualities: url.href });
+        const result = await api.runtime.sendNativeMessage(host, { youtube_qualities: url.href });
         if (result?.ok && Array.isArray(result.qualities)) return { qualities: result.qualities };
         return { error: result?.error || "connectClipSail" };
       }
       const name = Array.from(title.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").trim()).slice(0, 180).join("");
-      const result = await browser.runtime.sendNativeMessage(host, {
+      const result = await api.runtime.sendNativeMessage(host, {
         url: url.href, origin: youtube ? url.origin : page.origin, title: name, quality,
         auto_start: true, ...(formatId ? { format_id: formatId } : {})
       });
@@ -56,8 +57,8 @@ async function startDownload(message, sender) {
   return { error: "sourceChanged" };
 }
 
-browser.runtime.onMessage.addListener((message, sender) => {
-  if (["saveVideo", "videoQualities"].includes(message.type)) {
-    return startDownload(message, sender).catch(() => ({ error: "downloadFailed" }));
-  }
+api.runtime.onMessage.addListener((message, sender, reply) => {
+  if (!["saveVideo", "videoQualities"].includes(message?.type)) return;
+  void startDownload(message, sender).catch(() => ({ error: "downloadFailed" })).then(reply);
+  return true;
 });

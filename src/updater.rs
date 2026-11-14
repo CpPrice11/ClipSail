@@ -15,8 +15,10 @@ pub struct Channel {
 
 #[tauri::command]
 pub fn update_channel(app: AppHandle) -> Channel {
-    let kind = crate::youtube::app_folder().map_or("portable", |folder| {
-        if folder.join("pullora-package").is_file() {
+    let kind = crate::paths::app_folder().map_or("portable", |folder| {
+        if folder.join("portable.flag").is_file() {
+            "portable"
+        } else if folder.join("pullora-package").is_file() {
             "pullora"
         } else if folder.join("uninstall.exe").is_file() {
             "standalone"

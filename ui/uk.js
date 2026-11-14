@@ -1,5 +1,8 @@
 export default {
+  "expandNavigation": "Розгорнути навігацію",
+  "collapseNavigation": "Згорнути навігацію",
   "updates": "Оновлення",
+  "appVersion": "Версія {version}",
   "releasePage": "Відкрити релізи на GitHub",
   "updateInstall": "Оновити й перезапустити",
   "updateChecking": "Перевіряємо, чи є оновлення…",
@@ -163,6 +166,9 @@ export default {
   "firefoxDownload": "Firefox · керування в завантаженнях браузера",
   "firefoxOffline": "Очікує на Firefox",
   "connectFirefox": "Під’єднати Firefox / Zen",
+  "connectChrome": "Під’єднати Chrome",
+  "chromeConnected": "Chrome під’єднано.",
+  "chromeConnectError": "Не вдалося під’єднати Chrome. Перевір доступ до файлів програми й спробуй ще раз.",
   "firefoxConnected": "Firefox / Zen під’єднано.",
   "firefoxHostMissing": "Бракує компонента для Firefox. Розпакуй увесь ZIP програми.",
   "firefoxConnectError": "Не вдалося під’єднати Firefox. Перевір доступ до файлів програми й спробуй ще раз.",

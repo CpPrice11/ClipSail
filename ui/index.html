@@ -9,19 +9,22 @@
 </head>
 <body>
   <header class="bar">
-    <div class="brand"><img src="icon.svg" width="24" height="24" alt=""><span data-t="app"></span></div>
+    <div class="brand"><img src="icon.svg" width="24" height="24" alt=""><span data-t="app"></span><span id="appVersion" class="app-version muted" hidden></span></div>
     <label id="savedSearchBox" class="url-field" hidden><span data-icon="search"></span><input id="savedSearch" type="search" autocomplete="off"></label>
     <div class="app-controls">
       <button id="updatesButton" class="icon-button" type="button" aria-haspopup="dialog"><span data-icon="retry"></span></button>
-      <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option></select>
+      <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option><option value="ru" lang="ru">Русский</option></select>
     </div>
   </header>
-  <div class="shell">
-  <nav id="tabs" role="tablist" aria-orientation="vertical">
-    <button id="findTab" role="tab" aria-controls="findPanel" aria-selected="true"><span data-icon="search"></span></button>
-    <button id="queueTab" role="tab" aria-controls="queuePanel" aria-selected="false" tabindex="-1"><span data-icon="download"></span><span id="queueCount" class="count" hidden></span></button>
-    <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span data-icon="image"></span></button>
-  </nav>
+  <div id="shell" class="shell">
+  <div class="nav-rail">
+    <button id="navToggle" type="button" aria-controls="tabs" aria-expanded="false"><span data-icon="menu"></span></button>
+    <nav id="tabs" role="tablist" aria-orientation="vertical">
+      <button id="findTab" role="tab" aria-controls="findPanel" aria-selected="true"><span data-icon="search"></span><span class="nav-label" data-t="find"></span></button>
+      <button id="queueTab" role="tab" aria-controls="queuePanel" aria-selected="false" tabindex="-1"><span data-icon="download"></span><span class="nav-label" data-t="downloads"></span><span id="queueCount" class="count" hidden></span></button>
+      <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span data-icon="image"></span><span class="nav-label" data-t="savedGallery"></span></button>
+    </nav>
+  </div>
 
   <main>
     <section id="findPanel" role="tabpanel" aria-labelledby="findTab">
@@ -90,7 +93,10 @@
       <div class="panel-head queue-head">
         <h1 data-t="downloads"></h1>
         <span id="queueSummary" class="muted"></span>
-        <button id="connectFirefox" type="button" data-t="connectFirefox"></button>
+        <div class="browser-connections">
+          <button id="connectFirefox" type="button" data-t="connectFirefox"></button>
+          <button id="connectChrome" type="button" data-t="connectChrome"></button>
+        </div>
       </div>
       <div class="queue-toolbar" role="group" aria-labelledby="queueTab">
         <button id="queueAdd" type="button" class="primary"><span data-icon="link"></span><span data-t="addAddress"></span></button>
@@ -134,6 +140,16 @@
     </form>
   </dialog>
   <dialog id="removeDialog" aria-labelledby="removeQuestion"><form method="dialog"><p id="removeQuestion" data-t="confirmRemove"></p><div class="dialog-actions"><button value="cancel" autofocus data-t="cancel"></button><button value="remove" data-t="remove"></button></div></form></dialog>
+  <dialog id="downloadOptions" aria-labelledby="downloadOptionsTitle">
+    <form id="downloadOptionsForm">
+      <h2 id="downloadOptionsTitle" data-t="downloadQuality"></h2>
+      <div id="downloadOptionsList"></div>
+      <div class="dialog-actions">
+        <button id="cancelDownloadOptions" type="button" data-t="cancel"></button>
+        <button type="submit" class="primary" data-t="downloadNow"></button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="browserSave" aria-labelledby="browserSaveTitle">
     <form id="browserSaveForm">
       <h2 id="browserSaveTitle" data-t="saveVideo"></h2>

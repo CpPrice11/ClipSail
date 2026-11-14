@@ -1,13 +1,14 @@
 (() => {
   if (globalThis.mediaDownloaderActive) return;
   globalThis.mediaDownloaderActive = true;
+  const api = globalThis.browser ?? globalThis.chrome;
 
   const encrypted = new WeakSet();
   const buttons = new Map();
   const pending = new WeakSet();
   const ids = new WeakMap();
   let nextId = 0;
-  const t = key => browser.i18n.getMessage(key);
+  const t = key => api.i18n.getMessage(key);
   const protectedMedia = media => media.mediaKeys || encrypted.has(media);
   const declaredSource = media => media.getAttribute("src") || media.getAttribute("data-src");
   const imagePattern = /\.(?:jpe?g|png|webp|gif|avif)$/i;
@@ -84,7 +85,7 @@
     const url = youtubeSource(video);
     if (!url) return { error: "sourceChanged" };
     try {
-      const result = await browser.runtime.sendMessage({ type: "videoQualities", url });
+      const result = await api.runtime.sendMessage({ type: "videoQualities", url });
       return youtubeSource(video) === url ? { ...result, url } : { error: "sourceChanged" };
     } catch {
       return { error: "downloadFailed" };
@@ -104,7 +105,7 @@
     if (pending.has(video)) return { error: "sourceChanged" };
     pending.add(video);
     try {
-      return await browser.runtime.sendMessage({
+      return await api.runtime.sendMessage({
         type: "saveVideo", url: youtube || option.url.href, quality: option?.height ?? 0, title: video instanceof HTMLVideoElement ? document.title : "",
         formatId: selection?.formatId
       });
@@ -211,7 +212,7 @@
         const text = [height ? height + "p" : "", option.extension.toUpperCase()].filter(Boolean).join(" · ");
         const choice = document.createElement("button");
         choice.type = "button";
-        choice.textContent = index === 0 ? browser.i18n.getMessage("highest", text) : text;
+        choice.textContent = index === 0 ? api.i18n.getMessage("highest", text) : text;
         choice.onclick = async event => {
           if (!event.isTrusted || sending) return;
           sending = true;
@@ -271,15 +272,15 @@
   }
   for (const event of ["fullscreenchange", "scroll", "resize"]) addEventListener(event, schedule, true);
   const updateSettings = value => { settings = value ?? {}; schedule(); };
-  void browser.storage.local.get("buttons").then(state => updateSettings(state.buttons));
-  browser.storage.onChanged.addListener((changes, area) => {
+  void api.storage.local.get("buttons").then(state => updateSettings(state.buttons));
+  api.storage.onChanged.addListener((changes, area) => {
     if (area === "local" && changes.buttons) updateSettings(changes.buttons.newValue);
   });
   new MutationObserver(schedule).observe(document, { childList: true, subtree: true, attributes: true,
     attributeFilter: ["src", "data-src", "srcset", "hidden", "width", "height", "class"] });
   schedule();
 
-  browser.runtime.onMessage.addListener(message => {
+  api.runtime.onMessage.addListener((message, _sender, reply) => {
     if (message.type === "inspect") {
       const mediaElements = [...document.querySelectorAll("video, audio, img")].slice(0, 1000);
       const items = mediaElements.flatMap(media => {
@@ -300,23 +301,29 @@
       const youtubePlayer = mediaElements.find(media => media instanceof HTMLVideoElement
         && youtubeSource(media) && !variants(media).length);
       if (youtubePlayer && !ids.has(youtubePlayer)) ids.set(youtubePlayer, ++nextId);
-      return Promise.resolve({
+      reply({
         items, hideHere,
         videoLink: youtubePlayer ? youtubeLink() : null,
         youtubePlayerId: youtubePlayer ? ids.get(youtubePlayer) : null,
         error: mediaElements.some(protectedMedia) ? "protected" : "unavailable"
       });
+      return;
     }
     if (["start", "videoQualities"].includes(message.type) && Number.isInteger(message.id)) {
       const media = [...document.querySelectorAll("video, audio, img")].find(media => ids.get(media) === message.id);
-      if (!media) return Promise.resolve({ error: "sourceChanged" });
-      return message.type === "videoQualities" ? youtubeQualities(media)
+      if (!media) {
+        reply({ error: "sourceChanged" });
+        return;
+      }
+      const result = message.type === "videoQualities" ? youtubeQualities(media)
         : start(media, message.variant, message.selection);
+      void result.catch(() => ({ error: "downloadFailed" })).then(reply);
+      return true;
     }
     if (message.type === "togglePage") {
       hideHere = !hideHere;
       schedule();
-      return Promise.resolve(hideHere);
+      reply(hideHere);
     }
   });
 })();

@@ -3,6 +3,9 @@
 mod discovery;
 mod downloads;
 mod firefox;
+mod hls;
+mod paths;
+mod playback;
 mod updater;
 mod youtube;
 
@@ -35,6 +38,7 @@ struct Inner {
 struct App {
     client: reqwest::Client,
     state_file: PathBuf,
+    portable_root: Option<PathBuf>,
     inner: Mutex<Inner>,
     _instance: fs::File,
 }
@@ -45,7 +49,14 @@ impl App {
     }
 
     fn save(&self, inner: &Inner) -> AppResult<()> {
-        downloads::write_json(&self.state_file, &inner.jobs)
+        let Some(root) = self.portable_root.as_deref() else {
+            return downloads::write_json(&self.state_file, &inner.jobs);
+        };
+        let mut jobs = inner.jobs.clone();
+        for job in &mut jobs {
+            job.folder = stored_folder(&job.folder, root).to_path_buf();
+        }
+        downloads::write_json(&self.state_file, &jobs)
     }
 
     fn pump(self: &Arc<Self>) {
@@ -123,7 +134,7 @@ struct Snapshot {
 }
 
 #[tauri::command]
-fn connect_firefox() -> AppResult<()> {
+fn connect_firefox(chrome: Option<bool>) -> AppResult<()> {
     let current = std::env::current_exe().map_err(|_| "firefoxConnectError")?;
     let packaged = current
         .with_file_name("tools")
@@ -138,18 +149,34 @@ fn connect_firefox() -> AppResult<()> {
     }
     let dir = firefox::directory().ok_or("firefoxConnectError")?;
     fs::create_dir_all(&dir).map_err(|_| "firefoxConnectError")?;
-    let manifest = dir.join("native-host.json");
-    let info = serde_json::json!({
+    let chrome = chrome.unwrap_or(false);
+    let (file, registry_key, permission, extension) = if chrome {
+        (
+            "chrome-native-host.json",
+            r"Software\Google\Chrome\NativeMessagingHosts\local.media.downloader",
+            "allowed_origins",
+            firefox::CHROME_ORIGIN,
+        )
+    } else {
+        (
+            "native-host.json",
+            r"Software\Mozilla\NativeMessagingHosts\local.media.downloader",
+            "allowed_extensions",
+            firefox::ADDON_ID,
+        )
+    };
+    let manifest = dir.join(file);
+    let mut info = serde_json::json!({
         "name": "local.media.downloader",
-        "description": "ClipSail Firefox bridge",
+        "description": "ClipSail browser bridge",
         "path": exe,
         "type": "stdio",
-        "allowed_extensions": [firefox::ADDON_ID],
     });
+    info[permission] = serde_json::json!([extension]);
     downloads::write_json(&manifest, &info).map_err(|_| "firefoxConnectError")?;
     let key = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
     let (entry, _) = key
-        .create_subkey(r"Software\Mozilla\NativeMessagingHosts\local.media.downloader")
+        .create_subkey(registry_key)
         .map_err(|_| "firefoxConnectError")?;
     entry
         .set_value("", &manifest.as_os_str())
@@ -214,7 +241,11 @@ async fn find_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Vec<Me
             }
         }
     }
-    discovery::find(&state.client, &url).await
+    let mut items = discovery::find(&state.client, &url).await?;
+    for item in &mut items {
+        hls::retain_available(&state.client, item).await;
+    }
+    Ok(items)
 }
 
 #[tauri::command]
@@ -305,6 +336,7 @@ fn enqueue_saved_quality(state: State<'_, Arc<App>>, id: Uuid, format_id: String
             size: None,
             preview_only: false,
             format_id: Some(format_id),
+            source_origin: None,
         }],
     )
 }
@@ -344,8 +376,12 @@ async fn saved_gallery(
 }
 
 #[tauri::command]
-async fn inspect_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Option<u64>> {
-    discovery::inspect(&state.client, &url).await
+async fn inspect_media(
+    state: State<'_, Arc<App>>,
+    url: String,
+    source_origin: Option<String>,
+) -> AppResult<Option<u64>> {
+    discovery::inspect(&state.client, &url, source_origin.as_deref()).await
 }
 
 #[tauri::command]
@@ -400,7 +436,10 @@ async fn pick_folder(state: State<'_, Arc<App>>) -> AppResult<Option<PathBuf>> {
     }
     downloads::write_json(
         &state.state_file.with_file_name("download-folder.json"),
-        &folder,
+        &state
+            .portable_root
+            .as_deref()
+            .map_or(folder.as_path(), |root| stored_folder(&folder, root)),
     )?;
     state.lock().folder = folder.clone();
     Ok(Some(folder))
@@ -565,6 +604,7 @@ fn queue_browser_video(
                 size: None,
                 preview_only: false,
                 format_id,
+                source_origin: None,
             }],
             &inner.folder,
             &inner.jobs,
@@ -657,6 +697,9 @@ fn open_folder(state: State<'_, Arc<App>>, id: Uuid) -> AppResult<()> {
 }
 
 fn app_data_directory(handle: &AppHandle) -> tauri::Result<PathBuf> {
+    if let Some(root) = paths::portable_root() {
+        return Ok(root.join("data"));
+    }
     let mut dir = handle.path().app_local_data_dir()?;
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("MEDIA_DOWNLOADER_TEST_DATA") {
@@ -667,8 +710,49 @@ fn app_data_directory(handle: &AppHandle) -> tauri::Result<PathBuf> {
     Ok(dir)
 }
 
+fn stored_folder<'a>(folder: &'a Path, root: &Path) -> &'a Path {
+    folder.strip_prefix(root).unwrap_or(folder)
+}
+
+fn resolve_portable_folder(root: &Path, stored: PathBuf) -> std::io::Result<PathBuf> {
+    if stored.is_absolute() {
+        return Ok(stored);
+    }
+    if stored
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return Ok(root.join(stored));
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "Invalid portable download folder",
+    ))
+}
+
+#[cfg(test)]
+#[test]
+fn portable_download_folders_follow_the_package() {
+    let original = Path::new(r"D:\ClipSail");
+    let moved = Path::new(r"F:\Portable\ClipSail");
+    let downloads = original.join(r"data\Downloads");
+    let relative = stored_folder(&downloads, original);
+    assert_eq!(relative, Path::new(r"data\Downloads"));
+    assert_eq!(
+        resolve_portable_folder(moved, relative.to_path_buf()).unwrap(),
+        moved.join(relative)
+    );
+    let external = PathBuf::from(r"D:\Videos");
+    assert_eq!(
+        resolve_portable_folder(moved, external.clone()).unwrap(),
+        external
+    );
+    assert!(resolve_portable_folder(moved, PathBuf::from(r"..\Outside")).is_err());
+}
+
 fn setup(handle: &AppHandle) -> Result<App, Box<dyn std::error::Error>> {
     use std::os::windows::fs::OpenOptionsExt;
+    let portable_root = paths::portable_root();
     let dir = app_data_directory(handle)?;
     fs::create_dir_all(&dir)?;
     // Keep the queue and partial files under a single writer across app instances.
@@ -686,6 +770,9 @@ fn setup(handle: &AppHandle) -> Result<App, Box<dyn std::error::Error>> {
         Err(e) => return Err(e.into()),
     };
     for job in &mut jobs {
+        if let Some(root) = &portable_root {
+            job.folder = resolve_portable_folder(root, std::mem::take(&mut job.folder))?;
+        }
         if matches!(
             job.status,
             Status::Running | Status::Pausing | Status::Queued
@@ -693,15 +780,28 @@ fn setup(handle: &AppHandle) -> Result<App, Box<dyn std::error::Error>> {
             job.status = Status::Paused;
         }
     }
-    let mut folder = handle.path().download_dir()?;
+    let mut folder = match &portable_root {
+        Some(root) => {
+            let folder = root.join("data/Downloads");
+            fs::create_dir_all(&folder)?;
+            folder
+        }
+        None => handle.path().download_dir()?,
+    };
     if let Ok(contents) = fs::read(dir.join("download-folder.json"))
         && let Ok(saved) = serde_json::from_slice::<PathBuf>(&contents)
+        && let Ok(saved) = match &portable_root {
+            Some(root) => resolve_portable_folder(root, saved),
+            None => Ok(saved),
+        }
         && saved.is_dir()
     {
         folder = saved;
     }
     #[cfg(debug_assertions)]
-    if let Some(path) = std::env::var_os("MEDIA_DOWNLOADER_TEST_FOLDER") {
+    if portable_root.is_none()
+        && let Some(path) = std::env::var_os("MEDIA_DOWNLOADER_TEST_FOLDER")
+    {
         folder = PathBuf::from(path);
     }
     #[cfg(not(debug_assertions))]
@@ -717,6 +817,7 @@ fn setup(handle: &AppHandle) -> Result<App, Box<dyn std::error::Error>> {
         client: discovery::client()?,
         inner: Mutex::new(inner),
         state_file,
+        portable_root,
         _instance: instance,
     })
 }
@@ -819,21 +920,39 @@ fn main() {
     if browser_launch {
         context.config_mut().app.windows[0].focus = false;
     }
+    let portable_window = paths::portable_root().map(|root| {
+        let config = &mut context.config_mut().app.windows[0];
+        config.create = false;
+        (config.clone(), root.join("data/webview"))
+    });
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             match setup(app.handle()) {
                 Ok(state) => {
+                    if let Some((config, profile)) = &portable_window {
+                        tauri::WebviewWindowBuilder::from_config(app, config)?
+                            .data_directory(profile.clone())
+                            .build()?;
+                    }
                     let state = Arc::new(state);
                     app.manage(Arc::clone(&state));
+                    playback::install(app.handle());
                     install_tray(app.handle())?;
                     // Update an existing browser registration when Pullora launches a new version folder.
                     #[cfg(not(debug_assertions))]
-                    if !browser_launch
-                        && firefox::directory()
-                            .is_some_and(|dir| dir.join("native-host.json").is_file())
+                    if state.portable_root.is_none()
+                        && !browser_launch
+                        && let Some(dir) = firefox::directory()
                     {
-                        let _ = connect_firefox();
+                        for (chrome, name) in [
+                            (false, "native-host.json"),
+                            (true, "chrome-native-host.json"),
+                        ] {
+                            if dir.join(name).is_file() {
+                                let _ = connect_firefox(Some(chrome));
+                            }
+                        }
                     }
                     let handle = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
@@ -882,6 +1001,7 @@ fn main() {
             saved_video_qualities,
             enqueue_saved_quality,
             inspect_media,
+            playback::set_preview_source,
             fetch_preview,
             snapshot,
             firefox_downloads,

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     discovery::{self, AppResult, Kind},
-    youtube,
+    hls, youtube,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -31,6 +31,7 @@ pub struct Selection {
     #[serde(default)]
     pub preview_only: bool,
     pub format_id: Option<String>,
+    pub source_origin: Option<String>,
 }
 
 pub fn prepare_selection(
@@ -47,7 +48,13 @@ pub fn prepare_selection(
     let mut urls: HashSet<_> = existing
         .iter()
         .filter(|job| job.folder == folder && job.status != Status::Completed)
-        .map(|job| (job.url.clone(), job.format_id.clone()))
+        .map(|job| {
+            (
+                job.url.clone(),
+                job.format_id.clone(),
+                job.source_origin.clone(),
+            )
+        })
         .collect();
     let mut pending = Vec::new();
     for item in items {
@@ -55,13 +62,23 @@ pub fn prepare_selection(
             return Err("unsupported");
         }
         let url = discovery::url(&item.url)?;
+        let source_origin = item
+            .source_origin
+            .as_deref()
+            .map(discovery::url)
+            .transpose()?
+            .and_then(|source| discovery::media_referer(&source, &url));
         if let Some(id) = &item.format_id
             && (youtube::video_id(&url).is_none() || !youtube::valid_format_id(id))
         {
             return Err("qualityUnavailable");
         }
         let address = url.to_string();
-        if !urls.insert((address.clone(), item.format_id.clone())) {
+        if !urls.insert((
+            address.clone(),
+            item.format_id.clone(),
+            source_origin.clone(),
+        )) {
             continue;
         }
         let name: String = item
@@ -88,6 +105,7 @@ pub fn prepare_selection(
             archived: false,
             format_id: item.format_id,
             browser_origin: None,
+            source_origin,
         });
     }
     if pending.is_empty() {
@@ -167,6 +185,8 @@ pub struct Job {
     pub format_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_origin: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -324,13 +344,34 @@ pub async fn run(
     };
     let dir = job.folder.join(format!(".media-{}", job.id));
     fs::create_dir_all(&dir).map_err(|_| "disk")?;
+    if hls::is_playlist(&url) {
+        let result = tokio::select! {
+            biased;
+            _ = stop.changed() => Err("paused"),
+            result = hls::save(client, url, job.source_origin.as_deref(), &dir, |bytes| {
+                report(Update::Progress(bytes, None));
+            }) => result,
+        };
+        let final_result = result.and_then(|bytes| {
+            if *stop.borrow() {
+                return Err("paused");
+            }
+            let name = discovery::safe_media_name(&job.name, "mp4");
+            let name = publish_download(&dir.join("stream.mp4"), &job.folder, &name)?;
+            report(Update::Completed(name, bytes));
+            Ok(())
+        });
+        // A restarted stream begins from the first segment.
+        let _ = fs::remove_dir_all(&dir);
+        return final_result;
+    }
     let manifest = dir.join("parts.json");
     let old: Option<Plan> = fs::read(&manifest)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
     let get = |url: reqwest::Url| {
         let request = client.get(url);
-        match &job.browser_origin {
+        match job.browser_origin.as_ref().or(job.source_origin.as_ref()) {
             Some(origin) => request.header(REFERER, origin),
             None => request,
         }
@@ -656,24 +697,28 @@ pub async fn run(
     if *stop.borrow() {
         return Err("paused");
     }
-    let (stem, ext) = plan.name.rsplit_once('.').ok_or("disk")?;
-    let final_name = (0..1000)
-        .find_map(|number| {
-            let name = if number == 0 {
-                plan.name.clone()
-            } else {
-                format!("{stem} ({number}).{ext}")
-            };
-            match fs::hard_link(&output, job.folder.join(&name)) {
-                Ok(()) => Some(Ok(name)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(_) => Some(publish_copy(&output, &job.folder.join(&name)).map(|()| name)),
-            }
-        })
-        .ok_or("disk")??;
+    let final_name = publish_download(&output, &job.folder, &plan.name)?;
     report(Update::Completed(final_name, bytes));
     let _ = fs::remove_dir_all(&dir);
     Ok(())
+}
+
+fn publish_download(output: &Path, folder: &Path, file_name: &str) -> AppResult<String> {
+    let (stem, ext) = file_name.rsplit_once('.').ok_or("disk")?;
+    (0..1000)
+        .find_map(|number| {
+            let name = if number == 0 {
+                file_name.to_owned()
+            } else {
+                format!("{stem} ({number}).{ext}")
+            };
+            match fs::hard_link(output, folder.join(&name)) {
+                Ok(()) => Some(Ok(name)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(_) => Some(publish_copy(output, &folder.join(&name)).map(|()| name)),
+            }
+        })
+        .ok_or("disk")?
 }
 
 fn publish_copy(source: &Path, target: &Path) -> AppResult<()> {

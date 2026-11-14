@@ -1,5 +1,8 @@
 export default {
+  "expandNavigation": "Expand navigation",
+  "collapseNavigation": "Collapse navigation",
   "updates": "Updates",
+  "appVersion": "Version {version}",
   "releasePage": "Open GitHub Releases",
   "updateInstall": "Update and restart",
   "updateChecking": "Checking for an update…",
@@ -155,6 +158,9 @@ export default {
   "firefoxDownload": "Firefox · manage in browser downloads",
   "firefoxOffline": "Waiting for Firefox",
   "connectFirefox": "Connect Firefox / Zen",
+  "connectChrome": "Connect Chrome",
+  "chromeConnected": "Chrome connected.",
+  "chromeConnectError": "Could not connect Chrome. Check access to the app files and try again.",
   "firefoxConnected": "Firefox / Zen connected.",
   "firefoxHostMissing": "The Firefox component is missing. Extract the entire app ZIP.",
   "firefoxConnectError": "Could not connect Firefox. Check access to the app files and try again.",
