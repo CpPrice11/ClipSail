@@ -15,6 +15,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
+    direct,
     discovery::{self, AppResult, Kind},
     hls, youtube,
 };
@@ -32,6 +33,8 @@ pub struct Selection {
     pub preview_only: bool,
     pub format_id: Option<String>,
     pub source_origin: Option<String>,
+    #[serde(default)]
+    pub direct: bool,
 }
 
 pub fn prepare_selection(
@@ -69,7 +72,7 @@ pub fn prepare_selection(
             .transpose()?
             .and_then(|source| discovery::media_referer(&source, &url));
         if let Some(id) = &item.format_id
-            && (youtube::video_id(&url).is_none() || !youtube::valid_format_id(id))
+            && (item.direct || youtube::video_id(&url).is_none() || !youtube::valid_format_id(id))
         {
             return Err("qualityUnavailable");
         }
@@ -106,6 +109,7 @@ pub fn prepare_selection(
             format_id: item.format_id,
             browser_origin: None,
             source_origin,
+            direct: item.direct,
         });
     }
     if pending.is_empty() {
@@ -187,6 +191,8 @@ pub struct Job {
     pub browser_origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_origin: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -270,6 +276,97 @@ fn status_ok(response: &Response) -> AppResult<()> {
     }
 }
 
+#[derive(Serialize)]
+pub struct DirectInfo {
+    name: String,
+    size: Option<u64>,
+}
+
+fn direct_status(response: &Response) -> AppResult<()> {
+    match response.status() {
+        StatusCode::UNAUTHORIZED => Err("pageUnauthorized"),
+        StatusCode::FORBIDDEN => Err("pageForbidden"),
+        _ => status_ok(response),
+    }
+}
+
+pub async fn inspect_direct(client: &Client, url: &str) -> AppResult<DirectInfo> {
+    let url = discovery::url(url)?;
+    let mut response = client
+        .head(url.clone())
+        .header(ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|_| "network")?;
+    if matches!(
+        response.status(),
+        StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED | StatusCode::FORBIDDEN
+    ) || (response.status().is_success()
+        && !response.headers().contains_key(CONTENT_TYPE)
+        && !response.headers().contains_key(CONTENT_DISPOSITION))
+    {
+        response = client
+            .get(url.clone())
+            .header(ACCEPT_ENCODING, "identity")
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map_err(|_| "network")?;
+        if response.status() == StatusCode::RANGE_NOT_SATISFIABLE {
+            response = client
+                .get(url)
+                .header(ACCEPT_ENCODING, "identity")
+                .send()
+                .await
+                .map_err(|_| "network")?;
+        }
+    }
+    direct_status(&response)?;
+    let size = if response.status() == StatusCode::PARTIAL_CONTENT {
+        content_range(&response).map(|(_, _, size)| size)
+    } else {
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()?.parse().ok())
+    };
+    Ok(DirectInfo {
+        name: direct::name(&response)?,
+        size,
+    })
+}
+
+fn media_download_name(
+    response: &Response,
+    job: &Job,
+    is_youtube: bool,
+) -> AppResult<(String, &'static str)> {
+    let (extension, kind) = discovery::response_format(response).ok_or("unsupported")?;
+    let name = if is_youtube {
+        if (extension, kind) != ("mp4", Kind::Video) {
+            return Err("unsupported");
+        }
+        let name = if job.browser_origin.is_some() {
+            job.name.strip_suffix(".mp4").unwrap_or(&job.name)
+        } else {
+            &job.name
+        };
+        discovery::safe_media_name(name, extension)
+    } else if job.browser_origin.is_some() {
+        if discovery::file_format(&job.name).map(|(_, declared)| declared) != Some(kind) {
+            return Err("unsupported");
+        }
+        let stem = job
+            .name
+            .rsplit_once('.')
+            .map_or(job.name.as_str(), |(stem, _)| stem);
+        discovery::safe_media_name(stem, extension)
+    } else {
+        discovery::media_name(response.url(), extension)
+    };
+    Ok((name, extension))
+}
+
 async fn save_youtube_track(
     client: &Client,
     url: &reqwest::Url,
@@ -328,7 +425,7 @@ pub async fn run(
     report: impl Fn(Update) + Send + Sync,
 ) -> AppResult<()> {
     let url = discovery::url(&job.url)?;
-    let youtube_id = youtube::video_id(&url);
+    let youtube_id = (!job.direct).then(|| youtube::video_id(&url)).flatten();
     let (url, audio) = match &youtube_id {
         Some(id) => {
             tokio::select! {
@@ -344,7 +441,7 @@ pub async fn run(
     };
     let dir = job.folder.join(format!(".media-{}", job.id));
     fs::create_dir_all(&dir).map_err(|_| "disk")?;
-    if hls::is_playlist(&url) {
+    if !job.direct && hls::is_playlist(&url) {
         let result = tokio::select! {
             biased;
             _ = stop.changed() => Err("paused"),
@@ -388,29 +485,13 @@ pub async fn run(
         )
         .await?;
     }
-    status_ok(&response)?;
-    let (extension, kind) = discovery::response_format(&response).ok_or("unsupported")?;
-    let name = if youtube_id.is_some() {
-        if (extension, kind) != ("mp4", Kind::Video) {
-            return Err("unsupported");
-        }
-        let name = if job.browser_origin.is_some() {
-            job.name.strip_suffix(".mp4").unwrap_or(&job.name)
-        } else {
-            &job.name
-        };
-        discovery::safe_media_name(name, extension)
-    } else if job.browser_origin.is_some() {
-        if discovery::file_format(&job.name).map(|(_, declared)| declared) != Some(kind) {
-            return Err("unsupported");
-        }
-        let stem = job
-            .name
-            .rsplit_once('.')
-            .map_or(job.name.as_str(), |(stem, _)| stem);
-        discovery::safe_media_name(stem, extension)
+    let (name, media_extension) = if job.direct {
+        direct_status(&response)?;
+        (direct::name(&response)?, None)
     } else {
-        discovery::media_name(response.url(), extension)
+        status_ok(&response)?;
+        let (name, extension) = media_download_name(&response, job, youtube_id.is_some())?;
+        (name, Some(extension))
     };
     if response.headers().contains_key(CONTENT_ENCODING)
         && response.headers()[CONTENT_ENCODING] != "identity"
@@ -556,8 +637,13 @@ pub async fn run(
             .await?;
             status_ok(&response)?;
         }
+        let same_file = if let Some(extension) = media_extension {
+            discovery::response_format(&response).map(|(ext, _)| ext) == Some(extension)
+        } else {
+            direct::name(&response)? == plan.name
+        };
         if response.status() != StatusCode::OK
-            || discovery::response_format(&response).map(|(ext, _)| ext) != Some(extension)
+            || !same_file
             || response
                 .headers()
                 .get(CONTENT_ENCODING)
@@ -704,34 +790,42 @@ pub async fn run(
 }
 
 fn publish_download(output: &Path, folder: &Path, file_name: &str) -> AppResult<String> {
-    let (stem, ext) = file_name.rsplit_once('.').ok_or("disk")?;
+    let (stem, ext) = file_name
+        .rsplit_once('.')
+        .map_or((file_name, None), |(stem, ext)| (stem, Some(ext)));
     (0..1000)
         .find_map(|number| {
             let name = if number == 0 {
                 file_name.to_owned()
             } else {
-                format!("{stem} ({number}).{ext}")
+                let suffix = format!("{stem} ({number})");
+                ext.map_or_else(|| suffix.clone(), |ext| format!("{suffix}.{ext}"))
             };
-            match fs::hard_link(output, folder.join(&name)) {
+            let target = folder.join(&name);
+            let published = fs::hard_link(output, &target).or_else(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    Err(error)
+                } else {
+                    publish_copy(output, &target)
+                }
+            });
+            match published {
                 Ok(()) => Some(Ok(name)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(_) => Some(publish_copy(output, &folder.join(&name)).map(|()| name)),
+                Err(_) => Some(Err("disk")),
             }
         })
         .ok_or("disk")?
 }
 
-fn publish_copy(source: &Path, target: &Path) -> AppResult<()> {
+fn publish_copy(source: &Path, target: &Path) -> std::io::Result<()> {
     // Persist a complete temporary file without overwriting an existing download.
     let mut temp =
-        tempfile::NamedTempFile::new_in(target.parent().ok_or("disk")?).map_err(|_| "disk")?;
-    std::io::copy(
-        &mut fs::File::open(source).map_err(|_| "disk")?,
-        temp.as_file_mut(),
-    )
-    .map_err(|_| "disk")?;
-    temp.as_file().sync_all().map_err(|_| "disk")?;
-    temp.persist_noclobber(target).map_err(|_| "disk")?;
+        tempfile::NamedTempFile::new_in(target.parent().ok_or(std::io::ErrorKind::InvalidInput)?)?;
+    std::io::copy(&mut fs::File::open(source)?, temp.as_file_mut())?;
+    temp.as_file().sync_all()?;
+    temp.persist_noclobber(target)
+        .map_err(|failure| failure.error)?;
     Ok(())
 }
 

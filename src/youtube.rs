@@ -1,9 +1,8 @@
-use std::{process::Stdio, time::Duration};
-
 use reqwest::Url;
 use serde::Deserialize;
 
 use crate::discovery::{self, AppResult, Kind, Media, Quality};
+use crate::yt_dlp::{self, MetadataError};
 
 pub fn video_id(url: &Url) -> Option<String> {
     if url.scheme() != "https" || url.port().is_some() {
@@ -206,52 +205,23 @@ pub fn ffmpeg() -> AppResult<std::path::PathBuf> {
 }
 
 async fn extract(id: &str) -> AppResult<Extracted> {
-    let tools = crate::paths::app_folder()
+    let runtime = crate::paths::app_folder()
         .ok_or("youtubeTools")?
-        .join("tools");
-    let runtime = tools.join("qjs.exe");
+        .join("tools/qjs.exe");
     if !runtime.is_file() {
         return Err("youtubeTools");
     }
     let mut js_runtime = std::ffi::OsString::from("quickjs:");
     js_runtime.push(runtime);
-    let mut command = tokio::process::Command::new(tools.join("yt-dlp.exe"));
-    command
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .args([
-            "--ignore-config",
-            "--no-plugin-dirs",
-            "--no-cache-dir",
-            "--no-playlist",
-            "--no-js-runtimes",
-            "--js-runtimes",
-        ])
-        .arg(js_runtime)
-        .args([
-            "--socket-timeout",
-            "10",
-            "--retries",
-            "1",
-            "--extractor-retries",
-            "1",
-            "--print",
-            "%(.{title,duration,formats})j",
-            "--",
-        ])
-        .arg(watch_url(id));
-    let child = command.spawn().map_err(|_| "youtubeTools")?;
-    let output = tokio::time::timeout(Duration::from_secs(45), child.wait_with_output())
+    let mut command = yt_dlp::command().map_err(|_| "youtubeTools")?;
+    command.arg("--js-runtimes").arg(js_runtime);
+    let output = yt_dlp::metadata(command, &watch_url(id), "%(.{title,duration,formats})j")
         .await
-        .map_err(|_| "youtubeUnavailable")?
-        .map_err(|_| "youtubeUnavailable")?;
-    if !output.status.success() {
-        return Err("youtubeUnavailable");
-    }
-    serde_json::from_slice(&output.stdout).map_err(|_| "youtubeUnavailable")
+        .map_err(|error| match error {
+            MetadataError::Tools => "youtubeTools",
+            MetadataError::Unavailable => "youtubeUnavailable",
+        })?;
+    serde_json::from_slice(&output).map_err(|_| "youtubeUnavailable")
 }
 
 fn unique_qualities(data: &Extracted) -> Vec<Quality> {
@@ -283,6 +253,7 @@ pub async fn find(id: &str) -> AppResult<Vec<Media>> {
             url: watch_url(id),
             source_origin: None,
             name: data.title.chars().take(120).collect(),
+            photo_title: None,
             kind: Kind::Video,
             size: best.size,
             width: best.width,
@@ -297,6 +268,7 @@ pub async fn find(id: &str) -> AppResult<Vec<Media>> {
             url: poster.clone(),
             source_origin: None,
             name: "hqdefault.jpg".to_owned(),
+            photo_title: None,
             kind: Kind::Image,
             size: None,
             width: None,

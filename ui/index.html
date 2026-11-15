@@ -3,32 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClipSail</title>
+  <title>LoadSail</title>
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
 </head>
 <body>
-  <header class="bar">
-    <div class="brand"><img src="icon.svg" width="24" height="24" alt=""><span data-t="app"></span><span id="appVersion" class="app-version muted" hidden></span></div>
-    <label id="savedSearchBox" class="url-field" hidden><span data-icon="search"></span><input id="savedSearch" type="search" autocomplete="off"></label>
+  <header class="bar" data-tauri-drag-region>
+    <div class="brand" data-tauri-drag-region><img src="icon.svg" width="24" height="24" alt="" draggable="false" data-tauri-drag-region><span data-t="app" data-tauri-drag-region></span><span id="appVersion" class="app-version muted" data-tauri-drag-region hidden></span></div>
+    <label id="savedSearchBox" class="url-field" hidden><input id="savedSearch" type="search" autocomplete="off"></label>
     <div class="app-controls">
       <button id="updatesButton" class="icon-button" type="button" aria-haspopup="dialog"><span data-icon="retry"></span></button>
       <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option><option value="ru" lang="ru">Русский</option></select>
+      <div class="caption-buttons">
+        <button id="windowMinimize" type="button"><span class="fluent-icon" aria-hidden="true">&#xE921;</span></button>
+        <button id="windowMaximize" type="button"><span class="fluent-icon" aria-hidden="true">&#xE922;</span></button>
+        <button id="windowClose" type="button"><span class="fluent-icon" aria-hidden="true">&#xE8BB;</span></button>
+      </div>
     </div>
   </header>
   <div id="shell" class="shell">
   <div class="nav-rail">
-    <button id="navToggle" type="button" aria-controls="tabs" aria-expanded="false"><span data-icon="menu"></span></button>
+    <button id="navToggle" type="button" aria-controls="tabs" aria-expanded="false"><span class="fluent-icon" aria-hidden="true">&#xE700;</span></button>
     <nav id="tabs" role="tablist" aria-orientation="vertical">
+      <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span class="fluent-icon" aria-hidden="true">&#xE7AA;</span><span class="nav-label" data-t="savedGallery"></span></button>
       <button id="findTab" role="tab" aria-controls="findPanel" aria-selected="true"><span data-icon="search"></span><span class="nav-label" data-t="find"></span></button>
       <button id="queueTab" role="tab" aria-controls="queuePanel" aria-selected="false" tabindex="-1"><span data-icon="download"></span><span class="nav-label" data-t="downloads"></span><span id="queueCount" class="count" hidden></span></button>
-      <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span data-icon="image"></span><span class="nav-label" data-t="savedGallery"></span></button>
     </nav>
   </div>
 
   <main>
     <section id="findPanel" role="tabpanel" aria-labelledby="findTab">
       <form id="searchForm" class="search">
+        <h1 data-t="find"></h1>
         <label for="url" data-t="pageUrl"></label>
         <div class="search-row">
           <div class="url-field"><span data-icon="link"></span><input id="url" type="url" required aria-describedby="searchError" maxlength="8192" placeholder="https://example.com" spellcheck="false"></div>
@@ -40,47 +46,69 @@
       </form>
       <div class="workspace">
         <section class="results" aria-labelledby="resultsTitle">
-          <div class="panel-head">
-            <div class="head-title"><h1 id="resultsTitle" data-t="results"></h1><span id="resultCount" class="count" hidden></span></div>
-            <label class="select-all" id="allControl" hidden><input id="selectAll" type="checkbox"><span data-t="selectAll"></span></label>
-          </div>
-          <div id="filters" class="filters" hidden></div>
-          <details id="mediaFilters" class="media-filters" hidden>
-            <summary data-t="moreFilters"></summary>
-            <div class="media-filter-fields">
-              <label><span data-t="size"></span><select id="filterSize"></select></label>
-              <label><span data-t="duration"></span><select id="filterDuration"></select></label>
-              <label><span data-t="dimensions"></span><select id="filterResolution"></select></label>
-              <button type="button" id="resetMediaFilters" data-t="resetFilters"></button>
+          <div class="results-toolbar">
+            <div class="panel-head">
+              <div class="head-title"><h2 id="resultsTitle" data-t="results"></h2><span id="resultCount" class="count" hidden></span></div>
+              <label class="select-all" id="allControl" hidden><input id="selectAll" type="checkbox"><span data-t="selectAll"></span></label>
             </div>
-          </details>
-          <p id="filterStatus" class="muted" role="status" hidden></p>
-          <p id="collectionStatus" class="muted" role="status" hidden></p>
-          <div id="resultsStatus" class="empty" role="status"></div>
-          <div class="gallery-layout">
+            <div id="findFilterBar" class="find-filter-bar" hidden>
+              <button id="findMediaType" type="button" popovertarget="filters" aria-haspopup="menu" aria-expanded="false">
+                <span id="findMediaTypeIcon" aria-hidden="true"></span><span id="findMediaTypeLabel"></span>
+                <span class="fluent-icon" aria-hidden="true">&#xE70D;</span>
+              </button>
+              <div class="find-sort-controls">
+                <button id="findSort" type="button" popovertarget="findSortMenu" aria-haspopup="menu" aria-controls="findSortMenu" aria-expanded="false">
+                  <span id="findSortLabel"></span>
+                  <span class="fluent-icon" aria-hidden="true">&#xE70D;</span>
+                </button>
+                <button id="findSortDirection" class="icon-button" type="button" disabled>
+                  <span class="fluent-icon" aria-hidden="true">&#xE74B;</span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="saved-menu" id="filters" popover role="menu" aria-labelledby="findMediaType"></div>
+          <div id="findSortMenu" class="saved-menu" popover role="menu" aria-labelledby="findSort"></div>
+          <div id="resultsContent" class="results-content">
+            <p id="collectionStatus" class="muted" role="status" hidden></p>
+            <p id="findSortStatus" class="muted" role="status" hidden></p>
+            <div id="resultsStatus" class="empty" role="status"></div>
             <div id="gallery" class="gallery" hidden></div>
-            <aside id="findDetails" class="file-details" hidden></aside>
           </div>
         </section>
+        <aside id="findDetails" class="file-details" hidden></aside>
       </div>
       <footer class="selection">
-        <div class="destination"><span data-icon="folder"></span><div><span class="muted" data-t="destination"></span><div id="folderPath" class="path"></div></div></div>
-        <button id="pickFolder" type="button" data-t="change"></button>
-        <span id="selectionCount" class="muted"></span>
-        <button id="enqueue" class="primary" type="button" disabled><span data-icon="download"></span><span data-t="downloadSelected"></span></button>
+        <div class="destination" role="group" aria-labelledby="destinationLabel">
+          <span data-icon="folder"></span>
+          <div><span id="destinationLabel" class="muted" data-t="destination"></span><div id="folderPath" class="path"></div></div>
+          <button id="pickFolder" type="button" data-t="change"></button>
+        </div>
+        <span id="selectionCount" class="muted" role="status"></span>
+        <button id="enqueue" class="primary" type="button" disabled><span data-icon="download"></span><span id="enqueueLabel"></span></button>
       </footer>
     </section>
     <section id="savedPanel" role="tabpanel" aria-labelledby="savedTab" hidden>
       <div class="saved-header">
-        <div><h1><span data-icon="image"></span><span data-t="savedGallery"></span></h1><p id="savedCount" class="muted" aria-live="polite"></p></div>
+        <div><h1><span class="fluent-icon" aria-hidden="true">&#xE7AA;</span><span data-t="savedGallery"></span></h1><p id="savedCount" class="muted" aria-live="polite"></p></div>
         <div class="saved-commands">
-          <label class="saved-command" id="savedFilterControl" hidden><span data-icon="filter"></span><select id="savedFilters"></select></label>
-          <label class="saved-command" id="savedSortControl" hidden><span data-icon="sort"></span><select id="savedSort"><option value="newest" data-t="newest"></option><option value="oldest" data-t="oldest"></option></select></label>
-          <button type="button" id="refreshSaved" class="icon-button"><span data-icon="retry"></span></button>
+          <button type="button" id="refreshSaved"><span class="fluent-icon" aria-hidden="true">&#xE72C;</span><span data-t="refreshSaved"></span></button>
+          <button class="saved-command" id="savedSort" type="button" popovertarget="savedSortMenu" aria-haspopup="menu" aria-expanded="false" hidden>
+            <span data-icon="sort" aria-hidden="true"></span>
+          </button>
+          <div class="saved-menu" id="savedSortMenu" popover role="menu" aria-labelledby="savedSort"></div>
+          <button class="saved-command" id="savedFilters" type="button" popovertarget="savedFilterMenu" aria-haspopup="menu" aria-expanded="false" hidden>
+            <span class="fluent-icon" aria-hidden="true">&#xE71C;</span>
+          </button>
+          <div class="saved-menu" id="savedFilterMenu" popover role="menu" aria-labelledby="savedFilters"></div>
+          <button class="saved-command" id="savedView" type="button" popovertarget="savedViewMenu" aria-haspopup="menu" aria-expanded="false" hidden>
+            <span class="fluent-icon" aria-hidden="true">&#xE80A;</span>
+          </button>
+          <div class="saved-menu" id="savedViewMenu" popover role="menu" aria-labelledby="savedView"></div>
         </div>
       </div>
       <div id="savedStatus" class="empty" role="status"></div>
-      <div class="gallery-layout saved-layout">
+      <div class="saved-layout">
         <div id="savedStream" hidden>
           <div id="savedGallery"></div>
           <nav id="savedTimeline" class="saved-timeline" hidden></nav>
@@ -93,38 +121,54 @@
       <div class="panel-head queue-head">
         <h1 data-t="downloads"></h1>
         <span id="queueSummary" class="muted"></span>
-        <div class="browser-connections">
-          <button id="connectFirefox" type="button" data-t="connectFirefox"></button>
-          <button id="connectChrome" type="button" data-t="connectChrome"></button>
+        <button id="addDirectDownload" class="primary" type="button">
+          <span class="fluent-icon" aria-hidden="true">&#xE710;</span><span data-t="addDownload"></span>
+        </button>
+        <button class="saved-command" id="queueConnections" type="button" popovertarget="queueConnectionsMenu" aria-haspopup="menu" aria-expanded="false">
+          <span class="fluent-icon" aria-hidden="true">&#xE712;</span>
+        </button>
+        <div class="saved-menu" id="queueConnectionsMenu" popover role="menu" aria-labelledby="queueConnections">
+          <button id="connectFirefox" type="button" role="menuitem" data-t="connectFirefox"></button>
+          <button id="connectChrome" type="button" role="menuitem" data-t="connectChrome"></button>
         </div>
       </div>
-      <div class="queue-toolbar" role="group" aria-labelledby="queueTab">
-        <button id="queueAdd" type="button" class="primary"><span data-icon="link"></span><span data-t="addAddress"></span></button>
-        <button id="queueResume" type="button" disabled><span data-icon="play"></span><span data-t="resume"></span></button>
-        <button id="queuePause" type="button" disabled><span data-icon="pause"></span><span data-t="pause"></span></button>
-        <button id="queueOpen" type="button" disabled><span data-icon="folder"></span><span data-t="openFolder"></span></button>
-        <button id="queueRemove" type="button" disabled><span data-icon="close"></span><span data-t="remove"></span></button>
-      </div>
       <div id="queueError" class="error" role="alert" hidden></div>
-      <div class="queue-workspace">
+      <div class="queue-filters">
         <div id="queueCategories" role="group" aria-label="">
           <button data-category="all" data-t="allDownloads" aria-pressed="true"></button>
           <button data-category="unfinished" data-t="unfinishedDownloads" aria-pressed="false"></button>
           <button data-category="completed" data-t="completedDownloads" aria-pressed="false"></button>
-          <button data-category="video" data-t="videos" aria-pressed="false"></button>
         </div>
-        <div class="queue-list">
-          <table id="queueTable" aria-labelledby="queueTab">
-            <thead><tr>
-              <th scope="col"><button data-sort="name" data-t="fileName"></button></th>
-              <th scope="col"><button data-sort="total" data-t="size"></button></th>
-              <th scope="col"><button data-sort="status" data-t="downloadStatus"></button></th>
-              <th scope="col"><button data-sort="speed" data-t="speed"></button></th>
-            </tr></thead>
-            <tbody id="jobs"></tbody>
-          </table>
-          <div id="queueEmpty" class="queue-empty muted"></div>
+        <button id="queueMedia" type="button" popovertarget="queueMediaMenu" aria-haspopup="menu" aria-expanded="false">
+          <span class="fluent-icon" aria-hidden="true">&#xE71C;</span>
+          <span id="queueMediaLabel"></span>
+        </button>
+        <div class="saved-menu" id="queueMediaMenu" popover role="menu" aria-labelledby="queueMedia">
+          <button type="button" role="menuitemradio" data-kind="all" aria-checked="true"><span class="fluent-icon" aria-hidden="true">&#xE7AA;</span><span data-t="savedAll"></span></button>
+          <button type="button" role="menuitemradio" data-kind="video" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xE714;</span><span data-t="videos"></span></button>
+          <button type="button" role="menuitemradio" data-kind="image" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xEB9F;</span><span data-t="images"></span></button>
+          <button type="button" role="menuitemradio" data-kind="gif" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xE8B9;</span><span data-t="gif"></span></button>
+          <button type="button" role="menuitemradio" data-kind="audio" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xE8D6;</span><span data-t="audioList"></span></button>
+          <button type="button" role="menuitemradio" data-kind="asset" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xE90F;</span><span data-t="pageAssets"></span></button>
+          <button type="button" role="menuitemradio" data-kind="file" aria-checked="false"><span class="fluent-icon" aria-hidden="true">&#xE7C3;</span><span data-t="otherFiles"></span></button>
         </div>
+      </div>
+      <div class="queue-list">
+        <table id="queueTable" aria-labelledby="queueTab">
+          <thead><tr>
+            <th scope="col"><button data-sort="name"><span data-t="fileName"></span><span data-icon="sort"></span></button></th>
+            <th scope="col"><button data-sort="total"><span data-t="size"></span><span data-icon="sort"></span></button></th>
+            <th scope="col"><button data-sort="status"><span data-t="downloadStatus"></span><span data-icon="sort"></span></button></th>
+            <th scope="col" id="queueSpeed" hidden><button data-sort="speed"><span data-t="speed"></span><span data-icon="sort"></span></button></th>
+            <th scope="col" class="queue-action-heading" data-t="queueActions"></th>
+          </tr></thead>
+          <tbody id="jobs"></tbody>
+        </table>
+        <div id="queueEmpty" class="queue-empty muted" role="status" hidden></div>
+        <footer id="queueLocation" class="queue-location muted" hidden>
+          <span data-icon="folder"></span>
+          <span id="queuePath"></span>
+        </footer>
       </div>
     </section>
   </main>
@@ -140,6 +184,26 @@
     </form>
   </dialog>
   <dialog id="removeDialog" aria-labelledby="removeQuestion"><form method="dialog"><p id="removeQuestion" data-t="confirmRemove"></p><div class="dialog-actions"><button value="cancel" autofocus data-t="cancel"></button><button value="remove" data-t="remove"></button></div></form></dialog>
+  <dialog id="directDialog" aria-labelledby="directTitle">
+    <form id="directForm">
+      <h2 id="directTitle" data-t="addDownload"></h2>
+      <label><span data-t="directLink"></span><input id="directUrl" type="url" maxlength="8192" placeholder="https://" required autofocus aria-describedby="directError"></label>
+      <dl id="directInfo" class="metadata" aria-live="polite" hidden>
+        <div><dt data-t="fileName"></dt><dd id="directName"></dd></div>
+        <div><dt data-t="size"></dt><dd id="directSize"></dd></div>
+      </dl>
+      <div class="save-destination">
+        <label><span data-t="destination"></span><input id="directFolder" readonly></label>
+        <button id="directPickFolder" type="button" data-t="change"></button>
+      </div>
+      <p id="directStatus" class="muted" role="status" hidden></p>
+      <p id="directError" class="error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="directCancel" type="button" data-t="cancel"></button>
+        <button id="directSubmit" type="submit" class="primary"></button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="downloadOptions" aria-labelledby="downloadOptionsTitle">
     <form id="downloadOptionsForm">
       <h2 id="downloadOptionsTitle" data-t="downloadQuality"></h2>
@@ -185,7 +249,10 @@
         <div id="zoomActions" class="preview-actions"></div>
         <label id="previewMark"><input id="previewCheck" type="checkbox"><span data-t="selectForDownload"></span></label>
       </div>
-      <div id="zoomDetails"></div>
+      <details id="zoomInformation" class="details-information">
+        <summary data-t="fileInformation"></summary>
+        <div id="zoomDetails"></div>
+      </details>
     </div>
   </dialog>
 </body>

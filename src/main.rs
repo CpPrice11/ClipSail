@@ -1,13 +1,17 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod direct;
 mod discovery;
 mod downloads;
 mod firefox;
 mod hls;
 mod paths;
 mod playback;
+mod saved_file;
+mod twitter;
 mod updater;
 mod youtube;
+mod yt_dlp;
 
 use std::{
     collections::HashMap,
@@ -168,7 +172,7 @@ fn connect_firefox(chrome: Option<bool>) -> AppResult<()> {
     let manifest = dir.join(file);
     let mut info = serde_json::json!({
         "name": "local.media.downloader",
-        "description": "ClipSail browser bridge",
+        "description": "LoadSail browser bridge",
         "path": exe,
         "type": "stdio",
     });
@@ -233,7 +237,7 @@ async fn find_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Vec<Me
         match youtube::find(&id).await {
             Ok(items) => return Ok(items),
             Err(error) => {
-                return discovery::find(&state.client, &youtube::watch_url(&id))
+                return discovery::find(&state.client, &youtube::watch_url(&id), false)
                     .await
                     .ok()
                     .filter(|items| items.iter().any(|item| item.preview_only))
@@ -241,11 +245,45 @@ async fn find_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Vec<Me
             }
         }
     }
-    let mut items = discovery::find(&state.client, &url).await?;
-    for item in &mut items {
-        hls::retain_available(&state.client, item).await;
+    let (videos, page) = tokio::join!(twitter::find(parsed), find_page(&state.client, &url));
+    let Some(mut videos) = videos else {
+        return page;
+    };
+    if let Ok(items) = page {
+        let remaining = discovery::GALLERY_LIMIT - videos.len();
+        videos.extend(
+            items
+                .into_iter()
+                .filter(|item| item.kind != discovery::Kind::Video)
+                .take(remaining),
+        );
     }
-    Ok(items)
+    Ok(videos)
+}
+
+async fn find_page(client: &reqwest::Client, url: &str) -> AppResult<Vec<Media>> {
+    let mut best = Vec::new();
+    let mut best_count = 0;
+    for attempt in 0..=3 {
+        let mut items = match discovery::find(client, url, attempt > 0).await {
+            Err(_) if attempt > 0 => break,
+            result => result?,
+        };
+        let mut changed = false;
+        for item in &mut items {
+            changed |= hls::retain_available(client, item).await;
+        }
+        let count = items.iter().map(|item| item.qualities.len()).sum();
+        // A refreshed page can supply new CDN links without discarding a better result.
+        if attempt == 0 || (!items.is_empty() && count >= best_count) {
+            best = items;
+            best_count = count;
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(best)
 }
 
 #[tauri::command]
@@ -253,6 +291,12 @@ async fn find_collection(
     state: State<'_, Arc<App>>,
     url: String,
 ) -> AppResult<discovery::Collection> {
+    if let Some(items) = twitter::find(discovery::url(&url)?).await {
+        return Ok(discovery::Collection {
+            items,
+            partial: false,
+        });
+    }
     discovery::find_collection(&state.client, &url).await
 }
 
@@ -263,41 +307,30 @@ struct SavedMedia {
     kind: discovery::Kind,
     size: u64,
     path: PathBuf,
-    saved_at: Option<u64>,
+    created_at: Option<u64>,
+    modified_at: Option<u64>,
     can_check_qualities: bool,
 }
 
 fn saved_media(job: Job) -> Option<SavedMedia> {
     let name = job.file?;
     let (_, kind) = discovery::file_format(&name)?;
-    let mut components = Path::new(&name).components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return None;
-    }
-    let path = job.folder.join(&name);
-    let metadata = fs::symlink_metadata(&path).ok()?;
-    if !metadata.file_type().is_file() {
-        return None;
-    }
-    let folder = job.folder.canonicalize().ok()?;
-    let resolved = path.canonicalize().ok()?;
-    if resolved.parent() != Some(folder.as_path()) {
-        return None;
-    }
+    let (path, metadata) = saved_file::resolve(&job.folder, &name)?;
     Some(SavedMedia {
         id: job.id,
         name,
         kind,
         size: metadata.len(),
         path,
-        saved_at: metadata
-            .created()
-            .or_else(|_| metadata.modified())
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs()),
+        created_at: gallery_timestamp(metadata.created()),
+        modified_at: gallery_timestamp(metadata.modified()),
         can_check_qualities: kind == discovery::Kind::Video && saved_youtube_id(&job.url).is_some(),
     })
+}
+
+fn gallery_timestamp(result: std::io::Result<std::time::SystemTime>) -> Option<u64> {
+    let duration = result.ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    u64::try_from(duration.as_millis()).ok()
 }
 
 fn saved_youtube_id(url: &str) -> Option<String> {
@@ -337,6 +370,7 @@ fn enqueue_saved_quality(state: State<'_, Arc<App>>, id: Uuid, format_id: String
             preview_only: false,
             format_id: Some(format_id),
             source_origin: None,
+            direct: false,
         }],
     )
 }
@@ -380,8 +414,23 @@ async fn inspect_media(
     state: State<'_, Arc<App>>,
     url: String,
     source_origin: Option<String>,
-) -> AppResult<Option<u64>> {
+) -> AppResult<discovery::MediaInspection> {
     discovery::inspect(&state.client, &url, source_origin.as_deref()).await
+}
+
+#[tauri::command]
+async fn inspect_stream_resolution(
+    state: State<'_, Arc<App>>,
+    url: String,
+    source_origin: Option<String>,
+) -> AppResult<(u32, u32)> {
+    let target = discovery::url(&url)?;
+    let referer = source_origin
+        .as_deref()
+        .map(discovery::url)
+        .transpose()?
+        .and_then(|source| discovery::media_referer(&source, &target));
+    hls::inspect_resolution(&state.client, target, referer.as_deref()).await
 }
 
 #[tauri::command]
@@ -453,6 +502,14 @@ fn enqueue(state: State<'_, Arc<App>>, items: Vec<Selection>) -> AppResult<()> {
     drop(inner);
     state.pump();
     Ok(())
+}
+
+#[tauri::command]
+async fn inspect_direct(
+    state: State<'_, Arc<App>>,
+    url: String,
+) -> AppResult<downloads::DirectInfo> {
+    downloads::inspect_direct(&state.client, &url).await
 }
 
 fn save_jobs(state: &App, inner: &mut Inner, pending: Vec<Job>) -> AppResult<()> {
@@ -605,6 +662,7 @@ fn queue_browser_video(
                 preview_only: false,
                 format_id,
                 source_origin: None,
+                direct: false,
             }],
             &inner.folder,
             &inner.jobs,
@@ -882,11 +940,11 @@ fn show_main_window(handle: &AppHandle) {
 
 fn install_tray(handle: &AppHandle) -> tauri::Result<()> {
     // The webview replaces these labels with the selected language on startup.
-    let open = MenuItem::with_id(handle, "tray-open", "Відкрити ClipSail", true, None::<&str>)?;
-    let quit = MenuItem::with_id(handle, "tray-quit", "Вийти з ClipSail", true, None::<&str>)?;
+    let open = MenuItem::with_id(handle, "tray-open", "Відкрити LoadSail", true, None::<&str>)?;
+    let quit = MenuItem::with_id(handle, "tray-quit", "Вийти з LoadSail", true, None::<&str>)?;
     let menu = Menu::with_items(handle, &[&open, &quit])?;
     let mut tray = TrayIconBuilder::with_id("clipsail")
-        .tooltip("ClipSail")
+        .tooltip("LoadSail")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|handle, event| match event.id().as_ref() {
@@ -914,6 +972,129 @@ fn install_tray(handle: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+struct DesktopMica(bool);
+
+#[tauri::command]
+fn desktop_mica(backdrop: State<'_, DesktopMica>) -> bool {
+    backdrop.0
+}
+
+fn keep_single_title_bar(hwnd: windows::Win32::Foundation::HWND) -> windows::core::Result<()> {
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_STYLE, GetWindowLongW, IsIconic, MINMAXINFO, STYLESTRUCT, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongW, SetWindowPos,
+        WM_GETMINMAXINFO, WM_NCACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_CAPTION,
+    };
+
+    unsafe extern "system" fn window_style(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        if message == WM_NCACTIVATE && !unsafe { IsIconic(hwnd) }.as_bool() {
+            // Keep Tao's focus handling. -1 tells DefWindowProc to skip painting the old frame.
+            return unsafe { DefSubclassProc(hwnd, message, wparam, LPARAM(-1)) };
+        }
+        // Tauri restores the Win32 caption style during maximize and restore.
+        // Extending the frame would paint those buttons beneath the integrated title bar.
+        if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 {
+            if let Some(style) = unsafe { (lparam.0 as *mut STYLESTRUCT).as_mut() } {
+                style.styleNew &= !WS_CAPTION.0;
+            }
+        } else if message == WM_NCDESTROY {
+            let _ = unsafe { RemoveWindowSubclass(hwnd, Some(window_style), id) };
+        }
+        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+        // A captionless window must use the work area to keep the taskbar accessible.
+        if message == WM_GETMINMAXINFO
+            && let Some(limits) = unsafe { (lparam.0 as *mut MINMAXINFO).as_mut() }
+        {
+            let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+            let mut info = MONITORINFO {
+                cbSize: size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+                limits.ptMaxPosition = POINT {
+                    x: info.rcWork.left - info.rcMonitor.left,
+                    y: info.rcWork.top - info.rcMonitor.top,
+                };
+                limits.ptMaxSize = POINT {
+                    x: info.rcWork.right - info.rcWork.left,
+                    y: info.rcWork.bottom - info.rcWork.top,
+                };
+            }
+        }
+        result
+    }
+
+    unsafe {
+        SetWindowSubclass(hwnd, Some(window_style), 1, 0).ok()?;
+        let style = GetWindowLongW(hwnd, GWL_STYLE) & !(WS_CAPTION.0 as i32);
+        SetWindowLongW(hwnd, GWL_STYLE, style);
+        SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        )
+    }
+}
+
+fn enable_desktop_mica(window: &tauri::WebviewWindow) -> bool {
+    use windows::Win32::Graphics::Dwm::{
+        DWMSBT_MAINWINDOW, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_SYSTEMBACKDROP_TYPE,
+        DWMWA_USE_IMMERSIVE_DARK_MODE, DwmExtendFrameIntoClientArea, DwmSetWindowAttribute,
+    };
+    use windows::Win32::UI::Controls::MARGINS;
+
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    if keep_single_title_bar(hwnd).is_err() {
+        return false;
+    }
+    // Windows 11 supplies the backdrop. Extend it through the transparent WebView's client area.
+    let margins = MARGINS {
+        cxLeftWidth: -1,
+        ..Default::default()
+    };
+    let applied = unsafe {
+        let dark = 1i32;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            std::ptr::from_ref(&DWMWA_COLOR_NONE).cast(),
+            size_of_val(&DWMWA_COLOR_NONE) as u32,
+        );
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            std::ptr::from_ref(&dark).cast(),
+            size_of_val(&dark) as u32,
+        );
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE,
+            std::ptr::from_ref(&DWMSBT_MAINWINDOW).cast(),
+            size_of_val(&DWMSBT_MAINWINDOW) as u32,
+        )
+        .and_then(|()| DwmExtendFrameIntoClientArea(hwnd, &margins))
+    };
+    applied.is_ok()
+}
+
 fn main() {
     let browser_launch = std::env::args().any(|arg| arg == "--browser-request");
     let mut context = tauri::generate_context!();
@@ -935,6 +1116,11 @@ fn main() {
                             .data_directory(profile.clone())
                             .build()?;
                     }
+                    app.manage(DesktopMica(
+                        app.get_webview_window("main")
+                            .as_ref()
+                            .is_some_and(enable_desktop_mica),
+                    ));
                     let state = Arc::new(state);
                     app.manage(Arc::clone(&state));
                     playback::install(app.handle());
@@ -995,12 +1181,15 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            desktop_mica,
             find_media,
             find_collection,
             saved_gallery,
             saved_video_qualities,
             enqueue_saved_quality,
             inspect_media,
+            inspect_direct,
+            inspect_stream_resolution,
             playback::set_preview_source,
             fetch_preview,
             snapshot,
@@ -1024,7 +1213,7 @@ fn main() {
         .run(context);
     if let Err(error) = result {
         rfd::MessageDialog::new()
-            .set_title("ClipSail")
+            .set_title("LoadSail")
             .set_description(format!(
                 "Не вдалося запустити програму. / Could not start the app.\n\n{error}"
             ))

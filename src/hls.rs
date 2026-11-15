@@ -1,7 +1,10 @@
 use std::{path::Path, process::Stdio, time::Duration};
 
 use futures_util::{StreamExt, stream};
-use reqwest::{Client, Url, header::REFERER};
+use reqwest::{
+    Client, Url,
+    header::{RANGE, REFERER},
+};
 use tokio::{fs::File, io::AsyncWriteExt};
 
 use crate::{
@@ -23,11 +26,17 @@ fn relative(base: &Url, value: &str) -> AppResult<Url> {
 }
 
 enum Playlist {
-    Variant(Url),
-    Media {
-        initialization: Option<Url>,
-        segments: Vec<Url>,
+    Variant {
+        address: Url,
+        dimensions: Option<(u32, u32)>,
     },
+    Media(MediaPlaylist),
+}
+
+struct MediaPlaylist {
+    initialization: Option<Url>,
+    segments: Vec<Url>,
+    seconds: Option<f64>,
 }
 
 fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
@@ -36,14 +45,27 @@ fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
         return Err("unsupported");
     }
     let mut variant = false;
+    let mut dimensions = None;
     let mut complete = false;
     let mut duration = false;
+    let mut seconds = Some(0.0);
     let mut addresses = Vec::new();
     let mut initialization = None;
     for line in lines {
         let key = line.split(':').next().unwrap_or(line);
         match key {
-            "#EXT-X-STREAM-INF" if addresses.is_empty() && !variant && !duration => variant = true,
+            "#EXT-X-STREAM-INF" if addresses.is_empty() && !variant && !duration => {
+                variant = true;
+                dimensions = line.split(',').find_map(|part| {
+                    let attributes = part.split_once(':').map_or(part, |(_, rest)| rest);
+                    let (width, height) = attributes
+                        .trim()
+                        .strip_prefix("RESOLUTION=")?
+                        .split_once('x')?;
+                    let (width, height) = (width.parse::<u32>().ok()?, height.parse::<u32>().ok()?);
+                    (width > 0 && height > 0).then_some((width, height))
+                });
+            }
             "#EXT-X-MAP"
                 if addresses.is_empty() && !variant && !complete && initialization.is_none() =>
             {
@@ -55,7 +77,17 @@ fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
                 initialization = Some(relative(base, uri)?);
             }
             "#EXT-X-ENDLIST" => complete = true,
-            "#EXTINF" if !variant && !duration && !complete => duration = true,
+            "#EXTINF" if !variant && !duration && !complete => {
+                duration = true;
+                let segment_seconds = line
+                    .strip_prefix("#EXTINF:")
+                    .and_then(|value| value.split(',').next())
+                    .and_then(|value| value.trim().parse::<f64>().ok())
+                    .filter(|value| value.is_finite() && *value >= 0.0);
+                seconds = seconds
+                    .zip(segment_seconds)
+                    .map(|(total, value)| total + value);
+            }
             "#EXT-X-TARGETDURATION"
             | "#EXT-X-ALLOW-CACHE"
             | "#EXT-X-PLAYLIST-TYPE"
@@ -84,11 +116,15 @@ fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
         }
     }
     match (variant, complete, duration, addresses.len()) {
-        (true, false, false, 1) => Ok(Playlist::Variant(addresses.remove(0))),
-        (false, true, false, 1..) => Ok(Playlist::Media {
+        (true, false, false, 1) => Ok(Playlist::Variant {
+            address: addresses.remove(0),
+            dimensions,
+        }),
+        (false, true, false, 1..) => Ok(Playlist::Media(MediaPlaylist {
             initialization,
             segments: addresses,
-        }),
+            seconds: seconds.filter(|value| value.is_finite() && *value > 0.0),
+        })),
         _ => Err("unsupported"),
     }
 }
@@ -103,12 +139,11 @@ async fn get(
     if let Some(value) = referer {
         request = request.header(REFERER, value);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|_| "network")?
-        .error_for_status()
-        .map_err(|_| "httpError")?;
+    let response = request.send().await.map_err(|_| "network")?;
+    if response.status() == reqwest::StatusCode::GONE {
+        return Err("changed");
+    }
+    let response = response.error_for_status().map_err(|_| "httpError")?;
     if response.status() != reqwest::StatusCode::OK {
         return Err("changed");
     }
@@ -129,22 +164,25 @@ async fn media_playlist(
     client: &Client,
     url: Url,
     referer: Option<&str>,
-) -> AppResult<(Option<Url>, Vec<Url>)> {
-    let current = match playlist(client, url, referer).await? {
-        Playlist::Variant(address) => playlist(client, address, referer).await?,
-        complete => complete,
+) -> AppResult<(MediaPlaylist, Option<(u32, u32)>)> {
+    let (current, dimensions) = match playlist(client, url, referer).await? {
+        Playlist::Variant {
+            address,
+            dimensions,
+        } => (playlist(client, address, referer).await?, dimensions),
+        complete => (complete, None),
     };
     match current {
-        Playlist::Media {
-            initialization,
-            segments,
-        } => Ok((initialization, segments)),
-        Playlist::Variant(_) => Err("unsupported"),
+        Playlist::Media(media) => Ok((media, dimensions)),
+        Playlist::Variant { .. } => Err("unsupported"),
     }
 }
 
-pub async fn retain_available(client: &Client, item: &mut discovery::Media) {
+pub async fn retain_available(client: &Client, item: &mut discovery::Media) -> bool {
     let choices = &mut item.qualities;
+    if choices.is_empty() {
+        return false;
+    }
     let has_ffmpeg = youtube::ffmpeg().is_ok();
     let referer = item.source_origin.as_deref();
     let playlists: Vec<_> = choices
@@ -159,15 +197,133 @@ pub async fn retain_available(client: &Client, item: &mut discovery::Media) {
         .collect();
     let available = stream::iter(playlists.into_iter().map(|url| async move {
         match url {
-            Some(url) => has_ffmpeg && media_playlist(client, url, referer).await.is_ok(),
-            None => true,
+            Some(url) if has_ffmpeg => media_playlist(client, url, referer)
+                .await
+                .map(|(media, dimensions)| (dimensions, media.seconds)),
+            Some(_) => Err("youtubeTools"),
+            None => Ok((None, None)),
         }
     }))
     .buffered(4)
     .collect::<Vec<_>>()
     .await;
+    let changed = available.contains(&Err("changed"));
     let mut available = available.into_iter();
-    choices.retain(|_| available.next().unwrap_or(false));
+    choices.retain_mut(|quality| match available.next() {
+        Some(Ok((dimensions, seconds))) => {
+            item.duration = item.duration.or(seconds);
+            if let Some((width, height)) = dimensions {
+                quality.width = Some(width);
+                quality.height = Some(height);
+            }
+            true
+        }
+        _ => false,
+    });
+    changed
+}
+
+pub async fn inspect_resolution(
+    client: &Client,
+    url: Url,
+    referer: Option<&str>,
+) -> AppResult<(u32, u32)> {
+    const SAMPLE_LIMIT: usize = 512 * 1024;
+    static PROBES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+    if !is_playlist(&url) {
+        return Err("unsupported");
+    }
+    let _permit = PROBES.try_acquire().map_err(|_| "unknown")?;
+    let (media, dimensions) = media_playlist(client, url, referer).await?;
+    if let Some(dimensions) = dimensions {
+        return Ok(dimensions);
+    }
+    let fragmented = media.initialization.is_some();
+    let segment = media
+        .initialization
+        .or_else(|| media.segments.into_iter().next())
+        .ok_or("unsupported")?;
+    let mut request = client
+        .get(segment)
+        .header(RANGE, format!("bytes=0-{}", SAMPLE_LIMIT - 1))
+        .timeout(Duration::from_secs(8));
+    if let Some(referer) = referer {
+        request = request.header(REFERER, referer);
+    }
+    let mut response = request
+        .send()
+        .await
+        .map_err(|_| "network")?
+        .error_for_status()
+        .map_err(|_| "httpError")?;
+    let mut bytes = Vec::new();
+    while bytes.len() < SAMPLE_LIMIT {
+        let Some(chunk) = response.chunk().await.map_err(|_| "network")? else {
+            break;
+        };
+        bytes.extend_from_slice(&chunk[..chunk.len().min(SAMPLE_LIMIT - bytes.len())]);
+    }
+    if (fragmented && !clear_mp4_bytes(&bytes, true))
+        || (!fragmented && bytes.first() != Some(&0x47))
+    {
+        return Err("unsupported");
+    }
+
+    let probe = youtube::ffmpeg()?.with_file_name("ffprobe.exe");
+    let mut command = tokio::process::Command::new(probe);
+    command
+        .creation_flags(0x08000000)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .args([
+            "-v",
+            "error",
+            "-protocol_whitelist",
+            "pipe",
+            "-f",
+            if fragmented { "mov" } else { "mpegts" },
+        ]);
+    if fragmented {
+        command.args(["-enable_drefs", "0"]);
+    }
+    let mut child = command
+        .args([
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "json",
+            "pipe:0",
+        ])
+        .spawn()
+        .map_err(|_| "unsupported")?;
+    let mut input = child.stdin.take().ok_or("unsupported")?;
+    let output = tokio::time::timeout(Duration::from_secs(5), async move {
+        let (_, output) = tokio::join!(
+            async move { input.write_all(&bytes).await },
+            child.wait_with_output()
+        );
+        output
+    })
+    .await
+    .map_err(|_| "unsupported")?
+    .map_err(|_| "unsupported")?;
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).map_err(|_| "unsupported")?;
+    let stream = &json["streams"][0];
+    let dimension = |key: &str| {
+        stream[key]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .filter(|n| *n > 0)
+    };
+    Ok((
+        dimension("width").ok_or("unsupported")?,
+        dimension("height").ok_or("unsupported")?,
+    ))
 }
 
 fn clear_mp4_bytes(mut data: &[u8], initialization: bool) -> bool {
@@ -226,7 +382,14 @@ pub async fn save(
     progress: impl Fn(u64),
 ) -> AppResult<u64> {
     let ffmpeg = youtube::ffmpeg()?;
-    let (initialization, segments) = media_playlist(client, url, referer).await?;
+    let (
+        MediaPlaylist {
+            initialization,
+            segments,
+            ..
+        },
+        _,
+    ) = media_playlist(client, url, referer).await?;
     let fragmented = initialization.is_some();
     let transport = dir.join(if fragmented {
         "fragments.mp4"
@@ -308,11 +471,13 @@ mod tests {
     #[test]
     fn accepts_only_clear_complete_transport_streams() {
         let base = Url::parse("https://example.org/list/index.m3u8").unwrap();
-        let clear = "#EXTM3U\n#EXTINF:6,\nseg.ts?signature=keep\n#EXT-X-ENDLIST";
-        let Ok(Playlist::Media {
+        let clear =
+            "#EXTM3U\n#EXTINF:6.25,\nseg.ts?signature=keep\n#EXTINF:1.25,\nnext.ts\n#EXT-X-ENDLIST";
+        let Ok(Playlist::Media(MediaPlaylist {
             initialization: None,
             segments,
-        }) = parse(&base, clear)
+            seconds,
+        })) = parse(&base, clear)
         else {
             panic!("clear VOD with one segment should work");
         };
@@ -320,8 +485,15 @@ mod tests {
             segments[0].as_str(),
             "https://example.org/list/seg.ts?signature=keep"
         );
-        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=30000\n720.m3u8";
-        assert!(matches!(parse(&base, master), Ok(Playlist::Variant(_))));
+        assert_eq!(seconds, Some(7.5));
+        let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=30000,RESOLUTION=1280x720\n720.m3u8";
+        assert!(matches!(
+            parse(&base, master),
+            Ok(Playlist::Variant {
+                dimensions: Some((1280, 720)),
+                ..
+            })
+        ));
         for unsupported in [
             clear.replace("#EXTINF", "#EXT-X-KEY:METHOD=AES-128,URI=\"key\"\n#EXTINF"),
             clear.replace("#EXT-X-ENDLIST", ""),
@@ -337,10 +509,11 @@ mod tests {
     fn pairs_fragments_with_initialization_and_rejects_encryption() {
         let base = Url::parse("https://example.org/list/index.m3u8").unwrap();
         let clear = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4?token=1\"\n#EXTINF:6,\nchunk.m4s?token=2\n#EXT-X-ENDLIST";
-        let Ok(Playlist::Media {
+        let Ok(Playlist::Media(MediaPlaylist {
             initialization: Some(init),
             segments,
-        }) = parse(&base, clear)
+            ..
+        })) = parse(&base, clear)
         else {
             panic!("clear fragmented MP4 should work");
         };

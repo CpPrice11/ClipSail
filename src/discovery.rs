@@ -14,7 +14,7 @@ use html5ever::{
 };
 use reqwest::{
     Client, Response, StatusCode, Url,
-    header::{CONTENT_TYPE, HeaderMap},
+    header::{CACHE_CONTROL, CONTENT_TYPE, HeaderMap},
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,8 @@ pub struct Media {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_origin: Option<String>,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub photo_title: Option<String>,
     pub kind: Kind,
     pub size: Option<u64>,
     pub width: Option<u32>,
@@ -206,6 +208,7 @@ fn asset_label(value: &str) -> bool {
 fn asset_class(value: &str) -> bool {
     let value = value.to_ascii_lowercase();
     asset_label(&value)
+        || value.split(['-', '_']).any(|part| part == "logo")
         || value.starts_with("emoji-")
         || value.starts_with("icon-")
         || value.ends_with("-icon")
@@ -216,7 +219,41 @@ fn asset_path(url: &Url) -> bool {
     let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
     let (directory, file) = decoded.rsplit_once('/').unwrap_or(("", &decoded));
     let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
-    directory.split('/').any(asset_label) || asset_label(stem)
+    directory.split('/').any(asset_label) || asset_class(stem)
+}
+
+fn image_key(mut url: Url) -> Url {
+    url.set_fragment(None);
+    if path_format(&url).is_some_and(|(_, kind)| matches!(kind, Kind::Image | Kind::Gif)) {
+        let query: Vec<_> = url
+            .query_pairs()
+            .into_owned()
+            .filter(|(key, _)| {
+                !matches!(key.as_str(), "w" | "width" | "h" | "height" | "dpr" | "fit")
+            })
+            .collect();
+        url.set_query(None);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+    }
+    url
+}
+
+fn image_fragment(url: &Url) -> bool {
+    url.fragment()
+        .is_some_and(|fragment| fragment.starts_with("xywh="))
+        || url
+            .path_segments()
+            .and_then(Iterator::last)
+            .is_some_and(|segment| {
+                percent_encoding::percent_decode_str(segment)
+                    .decode_utf8_lossy()
+                    .strip_prefix("vts:")
+                    .is_some_and(|index| {
+                        !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
 }
 
 pub fn media_name(url: &Url, extension: &str) -> String {
@@ -228,10 +265,10 @@ pub fn media_name(url: &Url, extension: &str) -> String {
     safe_media_name(stem, extension)
 }
 
-pub fn safe_media_name(stem: &str, extension: &str) -> String {
-    let clean: String = stem
+pub fn clean_file_component(value: &str, limit: usize) -> String {
+    value
         .chars()
-        .take(100)
+        .take(limit)
         .map(|c| {
             if c.is_control() || "<>:\"/\\|?*".contains(c) {
                 '_'
@@ -239,7 +276,11 @@ pub fn safe_media_name(stem: &str, extension: &str) -> String {
                 c
             }
         })
-        .collect();
+        .collect()
+}
+
+pub fn safe_file_stem(stem: &str) -> Option<String> {
+    let clean = clean_file_component(stem, 100);
     let name = clean.trim_matches([' ', '.']);
     let base = name
         .split('.')
@@ -253,11 +294,12 @@ pub fn safe_media_name(stem: &str, extension: &str) -> String {
     ) || (base.starts_with("COM") || base.starts_with("LPT"))
         && base.chars().count() == 4
         && base.ends_with(|c: char| c.is_ascii_digit() || "¹²³".contains(c));
-    if name.is_empty() || reserved {
-        format!("media.{extension}")
-    } else {
-        format!("{name}.{extension}")
-    }
+    (!name.is_empty() && !reserved).then(|| name.to_owned())
+}
+
+pub fn safe_media_name(stem: &str, extension: &str) -> String {
+    let name = safe_file_stem(stem).unwrap_or_else(|| "media".to_owned());
+    format!("{name}.{extension}")
 }
 
 #[derive(Default)]
@@ -273,6 +315,9 @@ struct Html {
     poster: RefCell<Option<String>>,
     collect_links: bool,
     anchor: RefCell<Option<String>>,
+    asset_anchor: Cell<bool>,
+    picture: Cell<Option<usize>>,
+    picture_count: Cell<usize>,
     posts: RefCell<Vec<String>>,
     next: RefCell<Vec<String>>,
     json_ld: RefCell<Vec<String>>,
@@ -298,6 +343,7 @@ struct PlayerSource {
 
 struct Candidate {
     link: String,
+    photo_title: Option<String>,
     format: Option<(&'static str, Kind)>,
     hint: Option<Kind>,
     width: Option<u32>,
@@ -308,6 +354,37 @@ struct Candidate {
     video_group: Option<usize>,
     quality_height: Option<u32>,
     meta_video: bool,
+    picture: Option<usize>,
+}
+
+fn technical_photo_name(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("rs:fit:")
+        || lower.starts_with("vts:")
+        || lower.contains("(m=")
+        || lower.contains("(mh=")
+}
+
+fn meaningful_photo_title(value: &str) -> bool {
+    value.chars().any(char::is_alphabetic)
+        && !technical_photo_name(value)
+        && !matches!(
+            value.to_lowercase().as_str(),
+            "photo"
+                | "image"
+                | "picture"
+                | "thumbnail"
+                | "video thumbnail"
+                | "preview"
+                | "фото"
+                | "зображення"
+                | "мініатюра"
+                | "прев’ю"
+                | "превью"
+                | "изображение"
+                | "картинка"
+                | "миниатюра"
+        )
 }
 
 fn declared_quality(value: &str) -> Option<u32> {
@@ -360,6 +437,10 @@ impl TokenSink for Html {
             }
             if name == "a" {
                 self.anchor.replace(None);
+                self.asset_anchor.set(false);
+            }
+            if name == "picture" {
+                self.picture.set(None);
             }
             if matches!(name, "video" | "audio") {
                 self.player.set(None);
@@ -383,7 +464,33 @@ impl TokenSink for Html {
         let asset = attr("class")
             .is_some_and(|classes| classes.split_ascii_whitespace().any(asset_class))
             || attr("id").is_some_and(asset_class)
+            || attr("alt").is_some_and(|alt| {
+                alt.split_ascii_whitespace()
+                    .any(|part| part.eq_ignore_ascii_case("logo"))
+            })
             || explicitly_small;
+        if name == "a" {
+            self.asset_anchor.set(
+                asset
+                    || attr("href") == Some("/")
+                    || attr("rel").is_some_and(|rel| {
+                        rel.split_ascii_whitespace()
+                            .any(|token| token.eq_ignore_ascii_case("home"))
+                    }),
+            );
+        }
+        let srcset = attr("data-srcset").or_else(|| attr("srcset"));
+        if name == "picture" || (name == "img" && srcset.is_some() && self.picture.get().is_none())
+        {
+            self.picture_count.set(self.picture_count.get() + 1);
+        }
+        if name == "picture" {
+            self.picture.set(Some(self.picture_count.get()));
+        }
+        let picture = self
+            .picture
+            .get()
+            .or_else(|| (name == "img" && srcset.is_some()).then(|| self.picture_count.get()));
         if self.collect_links {
             let href = attr("href").filter(|link| link.len() <= 8192);
             let rel = |value| {
@@ -430,6 +537,16 @@ impl TokenSink for Html {
             }
             items.push(Candidate {
                 link: link.to_owned(),
+                photo_title: (name == "img" && !page_asset)
+                    .then(|| {
+                        ["title", "alt"]
+                            .into_iter()
+                            .filter_map(attr)
+                            .map(str::trim)
+                            .find(|value| meaningful_photo_title(value))
+                            .map(|value| value.chars().take(120).collect())
+                    })
+                    .flatten(),
                 format: attr("type").and_then(mime_format),
                 hint,
                 width,
@@ -452,6 +569,8 @@ impl TokenSink for Html {
                 .find_map(declared_quality)
                 .or_else(|| (name == "source").then_some(height).flatten()),
                 meta_video: name == "meta" && hint == Some(Kind::Video),
+                picture: picture
+                    .filter(|_| matches!(name, "img" | "source") && self.player.get().is_none()),
             });
         };
         match name {
@@ -510,11 +629,13 @@ impl TokenSink for Html {
                 } else {
                     self.player.get()
                 };
-                let page_asset = asset || (name == "source" && self.player_asset.get());
+                let page_asset = asset
+                    || (name == "source" && self.player_asset.get())
+                    || (self.player.get().is_none() && self.asset_anchor.get());
                 if let Some(link) = attr("data-src").or_else(|| attr("src")) {
                     push(link, hint, self.poster.borrow().clone(), page_asset);
                 }
-                if let Some(srcset) = attr("data-srcset").or_else(|| attr("srcset")) {
+                if let Some(srcset) = srcset {
                     if !srcset.trim_start().starts_with("data:") {
                         for link in srcset
                             .split(',')
@@ -685,12 +806,24 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             qualities.truncate(16);
             Some((address, qualities))
         });
+    let mut pictures = HashMap::<usize, HashSet<Url>>::new();
+    for item in &candidates {
+        if let Some(id) = item.picture
+            && let Ok(address) = base.join(&item.link)
+            && allowed(&address)
+        {
+            pictures.entry(id).or_default().insert(image_key(address));
+        }
+    }
     let mut seen = HashMap::new();
     let mut results: Vec<Media> = Vec::new();
     let mut groups = HashMap::<usize, Vec<(Media, Quality)>>::new();
     let mut entries = Vec::new();
     for (media, group) in candidates.into_iter().filter_map(|item| {
         let mut url = base.join(&item.link).ok()?;
+        if item.hint == Some(Kind::Image) && image_fragment(&url) {
+            return None;
+        }
         url.set_fragment(None);
         if !allowed(&url)
             || url.path().to_ascii_lowercase().ends_with(".m3u8")
@@ -714,13 +847,14 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
         if preview_only && item.meta_video && primary.is_some() {
             return None;
         }
+        let page_video = preview_only || primary_video.is_some() || item.meta_video;
         let preview = if matches!(kind, Kind::Image | Kind::Gif) {
             Some(url.to_string())
         } else {
             item.poster
                 .as_deref()
                 .or_else(|| {
-                    if preview_only || primary_video.is_some() {
+                    if page_video {
                         page_image.as_deref()
                     } else {
                         None
@@ -730,10 +864,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 .filter(allowed)
                 .map(|v| v.to_string())
         };
-        let name = if let Some(title) = title
-            .as_ref()
-            .filter(|_| preview_only || primary_video.is_some())
-        {
+        let name = if let Some(title) = title.as_ref().filter(|_| page_video) {
             title.clone()
         } else if extension.is_empty() {
             let segment = url
@@ -750,6 +881,9 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
         } else {
             media_name(&url, extension)
         };
+        let photo_title = (kind == Kind::Image && technical_photo_name(&name))
+            .then_some(item.photo_title)
+            .flatten();
         let group = item
             .video_group
             .filter(|_| kind == Kind::Video && !preview_only && matches!(extension, "mp4" | "webm"))
@@ -781,6 +915,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 url: url.to_string(),
                 source_origin: media_referer(source, &url),
                 name,
+                photo_title,
                 kind,
                 size: None,
                 width: item.width,
@@ -848,6 +983,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 !existing.preview_only && (existing.page_asset || media.page_asset);
             existing.width = existing.width.or(media.width);
             existing.height = existing.height.or(media.height);
+            existing.photo_title = existing.photo_title.take().or(media.photo_title);
             existing.preview = existing.preview.take().or(media.preview);
             if existing.qualities.is_empty() {
                 existing.qualities = media.qualities;
@@ -857,6 +993,25 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             results.push(media);
         }
     }
+    let covers: HashSet<_> = results
+        .iter()
+        .filter(|item| item.kind == Kind::Video && !item.page_asset)
+        .filter_map(|item| Url::parse(item.preview.as_deref()?).ok())
+        .map(image_key)
+        .collect();
+    let mut cover_variants = covers.clone();
+    for links in pictures
+        .into_values()
+        .filter(|links| !links.is_disjoint(&covers))
+    {
+        cover_variants.extend(links);
+    }
+    results.retain(|item| {
+        !matches!(item.kind, Kind::Image | Kind::Gif)
+            || Url::parse(&item.url)
+                .ok()
+                .is_none_or(|url| !cover_variants.contains(&image_key(url)))
+    });
     let (assets, media): (Vec<_>, Vec<_>) = results.into_iter().partition(|item| item.page_asset);
     media
         .into_iter()
@@ -865,9 +1020,12 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
         .collect()
 }
 
-pub async fn find(client: &Client, value: &str) -> AppResult<Vec<Media>> {
-    let mut response = client
-        .get(url(value)?)
+pub async fn find(client: &Client, value: &str, revalidate: bool) -> AppResult<Vec<Media>> {
+    let mut request = client.get(url(value)?);
+    if revalidate {
+        request = request.header(CACHE_CONTROL, "no-cache");
+    }
+    let mut response = request
         .send()
         .await
         .map_err(|_| "network")?
@@ -879,6 +1037,7 @@ pub async fn find(client: &Client, value: &str) -> AppResult<Vec<Media>> {
             url: base.to_string(),
             source_origin: None,
             name: media_name(&base, extension),
+            photo_title: None,
             kind,
             size: response.content_length(),
             width: None,
@@ -907,8 +1066,8 @@ fn page_error(error: reqwest::Error) -> &'static str {
 
 #[derive(Serialize)]
 pub struct Collection {
-    items: Vec<Media>,
-    partial: bool,
+    pub(crate) items: Vec<Media>,
+    pub(crate) partial: bool,
 }
 
 fn structured_links(
@@ -955,6 +1114,7 @@ fn structured_links(
                         .filter(|name| !name.trim().is_empty())
                         .map(|name| name.chars().take(120).collect())
                         .unwrap_or_else(|| media_name(&link, extension)),
+                    photo_title: None,
                     kind: Kind::Video,
                     size: None,
                     width: None,
@@ -1170,11 +1330,17 @@ pub async fn read_html(response: &mut Response) -> AppResult<String> {
     Ok(charset.decode(&data).0.into_owned())
 }
 
+#[derive(Serialize)]
+pub struct MediaInspection {
+    pub extension: &'static str,
+    pub size: Option<u64>,
+}
+
 pub async fn inspect(
     client: &Client,
     value: &str,
     source_origin: Option<&str>,
-) -> AppResult<Option<u64>> {
+) -> AppResult<MediaInspection> {
     let target = url(value)?;
     let referer = source_origin
         .map(url)
@@ -1191,12 +1357,13 @@ pub async fn inspect(
         .map_err(|_| "network")?
         .error_for_status()
         .map_err(|_| "httpError")?;
-    response_format(&response).ok_or("unsupported")?;
-    Ok(response
+    let (extension, _) = response_format(&response).ok_or("unsupported")?;
+    let size = response
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok()))
+        .and_then(|v| v.parse().ok());
+    Ok(MediaInspection { extension, size })
 }
 
 pub async fn preview(client: &Client, value: &str) -> AppResult<String> {
@@ -1340,14 +1507,55 @@ mod tests {
                <video src="/direct.mp4"></video>"#,
             &page,
         );
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[1].name, "Demo & title");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "Demo & title");
         assert_eq!(
-            result[1].preview.as_deref(),
+            result[0].preview.as_deref(),
             Some("https://example.org/cover.jpg")
         );
-        assert!(result[1].preview_only);
-        assert!(!result[0].preview_only && !result[2].preview_only);
+        assert!(result[0].preview_only);
+        assert!(!result[1].preview_only);
+    }
+
+    #[test]
+    fn keeps_player_covers_out_of_photo_results() {
+        let page = Url::parse("https://example.org/post").unwrap();
+        let result = parse(
+            r#"<meta property="og:image" content="/cover.jpg?id=1">
+               <meta property="og:video" content="/video.mp4">
+               <picture><source srcset="/p-2.jpg 2x">
+                 <img src="/cover.jpg?id=1&amp;width=480"></picture>
+               <img src="/cover.jpg?id=2"><img src="/sprite.jpg#xywh=1,2,3,4">
+               <img src="/thumbs/vts%3A227"><a href="/"><img src="/1234.png"></a>
+               <img alt="Example logo" src="/brand.png">"#,
+            &page,
+        );
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0].kind, Kind::Video);
+        assert_eq!(
+            result[0].preview.as_deref(),
+            Some("https://example.org/cover.jpg?id=1")
+        );
+        assert!(result[1].url.ends_with("/cover.jpg?id=2"));
+        assert!(result[2..].iter().all(|item| item.page_asset));
+    }
+
+    #[test]
+    fn uses_photo_titles_only_for_technical_file_names() {
+        let page = url("https://example.org/gallery").unwrap();
+        let photos = parse(
+            r#"<img src="/rs:fit:320:180" title="Photo" alt="A flower in bloom">
+               <img src="/rs:fit:160:90" alt="Thumbnail">
+               <img src="/spring.png" title="A different description">"#,
+            &page,
+        );
+        assert_eq!(photos.len(), 3);
+        assert_eq!(photos[0].name, "rs:fit:320:180");
+        assert_eq!(photos[0].photo_title.as_deref(), Some("A flower in bloom"));
+        assert_eq!(photos[1].name, "rs:fit:160:90");
+        assert_eq!(photos[1].photo_title, None);
+        assert_eq!(photos[2].name, "spring.png");
+        assert_eq!(photos[2].photo_title, None);
     }
 
     #[test]

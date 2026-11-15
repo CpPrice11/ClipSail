@@ -1,6 +1,6 @@
 {
-  "productName": "ClipSail",
-  "version": "0.1.32",
+  "productName": "LoadSail",
+  "version": "0.1.60",
   "identifier": "local.media.downloader",
   "build": {
     "frontendDist": "ui"
@@ -9,8 +9,11 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ClipSail",
+        "title": "LoadSail",
         "theme": "Dark",
+        "transparent": true,
+        "decorations": false,
+        "shadow": false,
         "width": 1240,
         "height": 820,
         "minWidth": 690,
@@ -28,7 +31,7 @@
   "bundle": {
     "active": false
   },
-  "mainBinaryName": "ClipSail",
+  "mainBinaryName": "LoadSail",
   "plugins": {
     "updater": {
       "endpoints": [

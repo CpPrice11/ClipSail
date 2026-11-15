@@ -7,6 +7,7 @@ mod paths;
 mod discovery;
 #[allow(dead_code)]
 mod youtube;
+mod yt_dlp;
 
 use std::{
     fs,
@@ -93,15 +94,10 @@ fn accept_video(video: &VideoRequest) -> Option<()> {
     let dir = firefox::incoming_directory()?;
     let app_data = dir.parent()?.parent()?;
     let folder = paths::app_folder()?;
-    let app = folder.join("ClipSail.exe");
-    let app = if app.is_file() {
-        app
-    } else {
-        folder.join("media-downloader.exe")
-    };
-    if !app.is_file() {
-        return None;
-    }
+    let app = ["LoadSail.exe", "ClipSail.exe", "media-downloader.exe"]
+        .into_iter()
+        .map(|name| folder.join(name))
+        .find(|path| path.is_file())?;
     fs::create_dir_all(&dir).ok()?;
     // Serialize submissions while checking the pending limit and starting the app.
     let _submission = (0..20).find_map(|_| {
