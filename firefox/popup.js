@@ -1,4 +1,5 @@
 const api = globalThis.browser ?? globalThis.chrome;
+document.documentElement.lang = api.i18n.getUILanguage();
 const t = key => api.i18n.getMessage(key);
 const status = document.getElementById("status");
 const list = document.getElementById("videos");
