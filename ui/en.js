@@ -201,6 +201,7 @@ export default {
   "httpError": "The site returned an error. Check the link or try again later.",
   "pageUnauthorized": "The site requires authentication for this request (401). Open the page in your browser.",
   "pageForbidden": "The site blocked LoadSail’s request (403). Try opening the page in your browser.",
+  "pageBrowserChallenge": "This site requires a browser check before it will show the video.",
   "openInBrowser": "Open in browser",
   "openSavedFile": "Open with Windows",
   "localPlaybackError": "The built-in player cannot play this file. Try opening it with Windows.",

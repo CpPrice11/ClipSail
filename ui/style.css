@@ -235,6 +235,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .job-status.failed { color: var(--red); }
 .job-status.paused { color: var(--yellow); }
 .job-progress { width: 100%; height: 5px; accent-color: var(--accent); display: block; margin-top: 5px; }
+.job-progress:indeterminate { appearance: none; background: var(--stroke); border-radius: 4px; }
+.job-progress:indeterminate::-webkit-progress-inner-element { display: none; }
 .queue-empty { padding: 30px 12px; text-align: center; }
 .queue-location { display: flex; align-items: baseline; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--edge); font-size: 12px; overflow-wrap: anywhere; }
 .icon-button { min-width: 36px; padding: 6px; }
@@ -250,7 +252,7 @@ dialog button { position: absolute; top: 4px; right: 5px; }
 #zoomContent button { position: static; }
 .preview-rail { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 8px; }
 .preview-strip { display: flex; gap: 6px; overflow-x: auto; padding: 4px; scrollbar-width: thin; }
-.preview-strip button { flex: 0 0 72px; padding: 2px; box-shadow: none; border-color: var(--edge); }
+.preview-strip button { flex: 0 0 72px; min-height: 48px; padding: 2px; box-shadow: none; border-color: var(--edge); }
 .preview-strip button[aria-current="true"] { border-color: var(--accent); background: var(--accent); }
 .strip-image { position: relative; display: grid; place-items: center; width: 100%; height: 42px; background: var(--crust); border-radius: 2px; }
 .strip-image img,.strip-image video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
@@ -508,3 +510,7 @@ dialog button { position: absolute; top: 4px; right: 5px; }
   .saved-header, .search, #queuePanel { padding-top: 24px; }
 }
 
+:is(#findSortMenu, #savedSortMenu) {
+  background: var(--mantle);
+  backdrop-filter: none;
+}

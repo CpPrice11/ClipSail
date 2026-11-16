@@ -2,41 +2,203 @@ use std::{path::Path, process::Stdio, time::Duration};
 
 use futures_util::{StreamExt, stream};
 use reqwest::{
-    Client, Url,
+    Client, StatusCode, Url,
     header::{RANGE, REFERER},
 };
-use tokio::{fs::File, io::AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     discovery::{self, AppResult},
+    downloads,
+    stream::{SEGMENT_LIMIT, Segment, Track as MediaPlaylist, clear_mp4_bytes, get, relative},
     youtube,
 };
 
 pub fn is_playlist(url: &Url) -> bool {
-    url.path().to_ascii_lowercase().ends_with(".m3u8")
-}
-
-fn relative(base: &Url, value: &str) -> AppResult<Url> {
-    let address = base.join(value).map_err(|_| "unsupported")?;
-    let address = discovery::url(address.as_str())?;
-    if base.scheme() == "https" && address.scheme() != "https" {
-        return Err("unsupported");
-    }
-    Ok(address)
+    discovery::is_hls(url)
 }
 
 enum Playlist {
-    Variant {
-        address: Url,
-        dimensions: Option<(u32, u32)>,
-    },
+    Master(Vec<Variant>),
     Media(MediaPlaylist),
 }
 
-struct MediaPlaylist {
-    initialization: Option<Url>,
-    segments: Vec<Url>,
-    seconds: Option<f64>,
+struct Variant {
+    address: Url,
+    audio: Option<Url>,
+    dimensions: Option<(u32, u32)>,
+    bandwidth: u64,
+}
+
+impl Variant {
+    fn id(&self) -> String {
+        let (width, height) = self.dimensions.unwrap_or_default();
+        format!("hls:{}:{width}:{height}", self.bandwidth)
+    }
+}
+
+pub fn valid_format_id(value: &str) -> bool {
+    if value == "hls:default" {
+        return true;
+    }
+    let Some(value) = value.strip_prefix("hls:").filter(|value| value.len() <= 42) else {
+        return false;
+    };
+    let mut parts = value.split(':');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(rate), Some(width), Some(height), None)
+            if rate.parse::<u64>().is_ok_and(|rate| rate > 0)
+                && width.parse::<u32>().is_ok() && height.parse::<u32>().is_ok()
+    )
+}
+
+fn attributes(mut line: &str) -> AppResult<std::collections::HashMap<&str, &str>> {
+    let mut out = std::collections::HashMap::new();
+    while !line.is_empty() {
+        let (key, value) = line.split_once('=').ok_or("unsupported")?;
+        let (value, rest) = if let Some(quoted) = value.strip_prefix('"') {
+            quoted.split_once('"').ok_or("unsupported")?
+        } else if let Some((value, _)) = value.split_once(',') {
+            (value, &line[key.len() + 1 + value.len()..])
+        } else {
+            (value, "")
+        };
+        if key.is_empty() || value.is_empty() || out.insert(key, value).is_some() {
+            return Err("unsupported");
+        }
+        line = if rest.is_empty() {
+            ""
+        } else {
+            rest.strip_prefix(',').ok_or("unsupported")?
+        };
+    }
+    Ok(out)
+}
+
+fn dimensions(value: &str) -> Option<(u32, u32)> {
+    let (w, h) = value.split_once('x')?;
+    let (w, h) = (w.parse().ok()?, h.parse().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+fn parse_master(base: &Url, lines: impl Iterator<Item = impl AsRef<str>>) -> AppResult<Playlist> {
+    let mut audio = std::collections::HashMap::new();
+    let mut variants = Vec::new();
+    let mut next = None;
+    for value in lines {
+        let line = value.as_ref();
+        if let Some(tag) = line.strip_prefix("#EXT-X-MEDIA:") {
+            let fields = attributes(tag)?;
+            if fields.get("TYPE") == Some(&"AUDIO") {
+                let group = *fields.get("GROUP-ID").ok_or("unsupported")?;
+                let address = fields
+                    .get("URI")
+                    .map(|uri| relative(base, uri))
+                    .transpose()?;
+                let priority = if fields.get("DEFAULT") == Some(&"YES") {
+                    2
+                } else {
+                    u8::from(fields.get("AUTOSELECT") == Some(&"YES"))
+                };
+                match audio.entry(group.to_owned()) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert((priority, address));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut entry)
+                        if priority > entry.get().0 =>
+                    {
+                        entry.insert((priority, address));
+                    }
+                    _ => {}
+                }
+            }
+        } else if let Some(tag) = line.strip_prefix("#EXT-X-STREAM-INF:") {
+            if next.is_some() || variants.len() >= 32 {
+                return Err("unsupported");
+            }
+            let fields = attributes(tag)?;
+            let bandwidth = fields
+                .get("BANDWIDTH")
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .ok_or("unsupported")?;
+            next = Some((
+                fields.get("RESOLUTION").and_then(|value| dimensions(value)),
+                bandwidth,
+                fields.get("AUDIO").map(|group| (*group).to_owned()),
+            ));
+        } else if line.starts_with('#') {
+            if line.starts_with("#EXT-X-SESSION-KEY") || line.starts_with("#EXT-X-KEY") {
+                return Err("unsupported");
+            }
+        } else {
+            let (dimensions, bandwidth, group) = next.take().ok_or("unsupported")?;
+            variants.push((relative(base, line)?, dimensions, bandwidth, group));
+        }
+    }
+    if next.is_some() || variants.is_empty() {
+        return Err("unsupported");
+    }
+    let mut variants: Vec<_> = variants
+        .into_iter()
+        .filter_map(|(address, dimensions, bandwidth, group)| {
+            let audio = match group {
+                Some(group) => audio.get(&group)?.1.clone(),
+                None => None,
+            };
+            Some(Variant {
+                address,
+                audio,
+                dimensions,
+                bandwidth,
+            })
+        })
+        .collect();
+    if variants.is_empty() {
+        return Err("unsupported");
+    }
+    variants.sort_by_key(|variant| {
+        let (w, h) = variant.dimensions.unwrap_or_default();
+        std::cmp::Reverse((w.min(h), variant.bandwidth))
+    });
+    let mut seen = std::collections::HashSet::new();
+    variants.retain(|variant| seen.insert(variant.id()));
+    Ok(Playlist::Master(variants))
+}
+
+fn byte_range(value: &str) -> AppResult<(u64, Option<u64>)> {
+    let (len, start) = match value.split_once('@') {
+        Some((len, start)) => (len, Some(start.parse().map_err(|_| "unsupported")?)),
+        None => (value, None),
+    };
+    let len = len.parse::<u64>().map_err(|_| "unsupported")?;
+    if len == 0 || len > SEGMENT_LIMIT as u64 {
+        return Err("unsupported");
+    }
+    Ok((len, start))
+}
+
+fn segment(
+    base: &Url,
+    location: &str,
+    range: Option<(u64, Option<u64>)>,
+    previous: Option<&Segment>,
+) -> AppResult<Segment> {
+    let url = relative(base, location)?;
+    let range = match range {
+        Some((len, start)) => {
+            let start = start
+                .or_else(|| {
+                    let previous = previous.filter(|previous| previous.url == url)?;
+                    previous.range?.1.checked_add(1)
+                })
+                .ok_or("unsupported")?;
+            Some((start, start.checked_add(len - 1).ok_or("unsupported")?))
+        }
+        None => None,
+    };
+    Ok(Segment { url, range })
 }
 
 fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
@@ -44,114 +206,77 @@ fn parse(base: &Url, text: &str) -> AppResult<Playlist> {
     if lines.next() != Some("#EXTM3U") {
         return Err("unsupported");
     }
-    let mut variant = false;
-    let mut dimensions = None;
+    if lines
+        .clone()
+        .any(|line| line.starts_with("#EXT-X-STREAM-INF:"))
+    {
+        return parse_master(base, lines);
+    }
     let mut complete = false;
     let mut duration = false;
-    let mut seconds = Some(0.0);
-    let mut addresses = Vec::new();
+    let mut seconds = 0.0;
+    let mut sequence = 0;
+    let mut segments = Vec::new();
     let mut initialization = None;
+    let mut range = None;
     for line in lines {
-        let key = line.split(':').next().unwrap_or(line);
+        let (key, value) = line.split_once(':').unwrap_or((line, ""));
         match key {
-            "#EXT-X-STREAM-INF" if addresses.is_empty() && !variant && !duration => {
-                variant = true;
-                dimensions = line.split(',').find_map(|part| {
-                    let attributes = part.split_once(':').map_or(part, |(_, rest)| rest);
-                    let (width, height) = attributes
-                        .trim()
-                        .strip_prefix("RESOLUTION=")?
-                        .split_once('x')?;
-                    let (width, height) = (width.parse::<u32>().ok()?, height.parse::<u32>().ok()?);
-                    (width > 0 && height > 0).then_some((width, height))
-                });
+            "#EXT-X-MAP" if segments.is_empty() && !complete && initialization.is_none() => {
+                let fields = attributes(value)?;
+                let uri = fields.get("URI").ok_or("unsupported")?;
+                let range = fields
+                    .get("BYTERANGE")
+                    .map(|range| byte_range(range))
+                    .transpose()?;
+                initialization = Some(segment(base, uri, range, None)?);
             }
-            "#EXT-X-MAP"
-                if addresses.is_empty() && !variant && !complete && initialization.is_none() =>
-            {
-                let uri = line
-                    .strip_prefix("#EXT-X-MAP:URI=\"")
-                    .and_then(|value| value.strip_suffix('"'))
-                    .filter(|value| !value.is_empty() && !value.contains('"'))
-                    .ok_or("unsupported")?;
-                initialization = Some(relative(base, uri)?);
+            "#EXT-X-BYTERANGE" if range.is_none() && !complete => {
+                range = Some(byte_range(value)?);
             }
             "#EXT-X-ENDLIST" => complete = true,
-            "#EXTINF" if !variant && !duration && !complete => {
+            "#EXTINF" if !duration && !complete => {
                 duration = true;
-                let segment_seconds = line
-                    .strip_prefix("#EXTINF:")
-                    .and_then(|value| value.split(',').next())
+                let segment_seconds = value
+                    .split(',')
+                    .next()
                     .and_then(|value| value.trim().parse::<f64>().ok())
-                    .filter(|value| value.is_finite() && *value >= 0.0);
-                seconds = seconds
-                    .zip(segment_seconds)
-                    .map(|(total, value)| total + value);
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .ok_or("unsupported")?;
+                seconds += segment_seconds;
             }
+            "#EXT-X-MEDIA-SEQUENCE" if segments.is_empty() => {
+                sequence = value.parse().map_err(|_| "unsupported")?;
+            }
+            "#EXT-X-KEY" if attributes(value)?.get("METHOD") == Some(&"NONE") => {}
             "#EXT-X-TARGETDURATION"
             | "#EXT-X-ALLOW-CACHE"
             | "#EXT-X-PLAYLIST-TYPE"
             | "#EXT-X-VERSION"
-            | "#EXT-X-MEDIA-SEQUENCE"
+            | "#EXT-X-PROGRAM-DATE-TIME"
             | "#EXT-X-INDEPENDENT-SEGMENTS" => {}
-            // Reject encryption, byte ranges and renditions with separate tracks.
-            _ if line.starts_with('#') => return Err("unsupported"),
-            _ if (variant || duration) && !complete && addresses.len() < 12_000 => {
-                let address = relative(base, line)?;
-                let valid = if variant {
-                    initialization.is_none() && addresses.is_empty() && is_playlist(&address)
-                } else if initialization.is_some() {
-                    let path = address.path().to_ascii_lowercase();
-                    path.ends_with(".m4s") || path.ends_with(".mp4")
-                } else {
-                    address.path().to_ascii_lowercase().ends_with(".ts")
-                };
-                if !valid {
-                    return Err("unsupported");
-                }
-                addresses.push(address);
+            _ if line.starts_with("#EXT") => return Err("unsupported"),
+            _ if line.starts_with('#') => {}
+            _ if duration && !complete && segments.len() < 12_000 => {
+                segments.push(segment(base, line, range.take(), segments.last())?);
                 duration = false;
             }
             _ => return Err("unsupported"),
         }
     }
-    match (variant, complete, duration, addresses.len()) {
-        (true, false, false, 1) => Ok(Playlist::Variant {
-            address: addresses.remove(0),
-            dimensions,
-        }),
-        (false, true, false, 1..) => Ok(Playlist::Media(MediaPlaylist {
-            initialization,
-            segments: addresses,
-            seconds: seconds.filter(|value| value.is_finite() && *value > 0.0),
-        })),
-        _ => Err("unsupported"),
+    if !complete || duration || range.is_some() || segments.is_empty() {
+        return Err("unsupported");
     }
-}
-
-async fn get(
-    client: &Client,
-    url: Url,
-    referer: Option<&str>,
-    timeout: Duration,
-) -> AppResult<reqwest::Response> {
-    let mut request = client.get(url).timeout(timeout);
-    if let Some(value) = referer {
-        request = request.header(REFERER, value);
-    }
-    let response = request.send().await.map_err(|_| "network")?;
-    if response.status() == reqwest::StatusCode::GONE {
-        return Err("changed");
-    }
-    let response = response.error_for_status().map_err(|_| "httpError")?;
-    if response.status() != reqwest::StatusCode::OK {
-        return Err("changed");
-    }
-    Ok(response)
+    Ok(Playlist::Media(MediaPlaylist {
+        initialization,
+        segments,
+        sequence,
+        seconds: (seconds.is_finite() && seconds > 0.0).then_some(seconds),
+    }))
 }
 
 async fn playlist(client: &Client, url: Url, referer: Option<&str>) -> AppResult<Playlist> {
-    let mut response = get(client, url, referer, Duration::from_secs(15)).await?;
+    let mut response = get(client, url, referer, Duration::from_secs(15), None).await?;
     let address = response.url().clone();
     let bytes = discovery::read_limited(&mut response, 2 * 1024 * 1024, "unsupported").await?;
     parse(
@@ -164,77 +289,147 @@ async fn media_playlist(
     client: &Client,
     url: Url,
     referer: Option<&str>,
-) -> AppResult<(MediaPlaylist, Option<(u32, u32)>)> {
-    let (current, dimensions) = match playlist(client, url, referer).await? {
-        Playlist::Variant {
-            address,
-            dimensions,
-        } => (playlist(client, address, referer).await?, dimensions),
-        complete => (complete, None),
-    };
-    match current {
-        Playlist::Media(media) => Ok((media, dimensions)),
-        Playlist::Variant { .. } => Err("unsupported"),
+) -> AppResult<MediaPlaylist> {
+    match playlist(client, url, referer).await? {
+        Playlist::Media(media) => Ok(media),
+        Playlist::Master(_) => Err("unsupported"),
     }
 }
 
+async fn selected_media(
+    client: &Client,
+    url: Url,
+    format_id: Option<&str>,
+    referer: Option<&str>,
+) -> AppResult<(MediaPlaylist, Option<MediaPlaylist>, Option<(u32, u32)>)> {
+    let requested = format_id.filter(|id| *id != "hls:default");
+    match playlist(client, url, referer).await? {
+        Playlist::Master(variants) => {
+            let variant = variants
+                .into_iter()
+                .find(|variant| requested.is_none_or(|id| id == variant.id()))
+                .ok_or("qualityUnavailable")?;
+            let (video, audio) = variant_media(client, &variant, referer).await?;
+            Ok((video, audio, variant.dimensions))
+        }
+        Playlist::Media(media) if requested.is_none() => Ok((media, None, None)),
+        Playlist::Media(_) => Err("qualityUnavailable"),
+    }
+}
+
+async fn variant_media(
+    client: &Client,
+    variant: &Variant,
+    referer: Option<&str>,
+) -> AppResult<(MediaPlaylist, Option<MediaPlaylist>)> {
+    tokio::try_join!(
+        media_playlist(client, variant.address.clone(), referer),
+        async {
+            match &variant.audio {
+                Some(audio) => media_playlist(client, audio.clone(), referer)
+                    .await
+                    .map(Some),
+                None => Ok(None),
+            }
+        }
+    )
+}
+
+pub fn is_stream_quality(quality: &discovery::Quality) -> bool {
+    quality.format_id.as_deref().map_or_else(
+        || {
+            quality
+                .url
+                .as_deref()
+                .and_then(|url| discovery::url(url).ok())
+                .is_some_and(|url| is_playlist(&url))
+        },
+        valid_format_id,
+    )
+}
+
 pub async fn retain_available(client: &Client, item: &mut discovery::Media) -> bool {
-    let choices = &mut item.qualities;
-    if choices.is_empty() {
+    if !item.qualities.iter().any(is_stream_quality) {
         return false;
     }
     let has_ffmpeg = youtube::ffmpeg().is_ok();
     let referer = item.source_origin.as_deref();
-    let playlists: Vec<_> = choices
-        .iter()
-        .map(|quality| {
-            quality
-                .url
-                .as_deref()
-                .and_then(|value| discovery::url(value).ok())
-                .filter(is_playlist)
-        })
-        .collect();
-    let available = stream::iter(playlists.into_iter().map(|url| async move {
-        match url {
-            Some(url) if has_ffmpeg => media_playlist(client, url, referer)
-                .await
-                .map(|(media, dimensions)| (dimensions, media.seconds)),
-            Some(_) => Err("youtubeTools"),
-            None => Ok((None, None)),
+    let mut changed = false;
+    let mut qualities = Vec::new();
+    for quality in std::mem::take(&mut item.qualities) {
+        if !is_stream_quality(&quality) {
+            qualities.push(quality);
+            continue;
         }
-    }))
-    .buffered(4)
-    .collect::<Vec<_>>()
-    .await;
-    let changed = available.contains(&Err("changed"));
-    let mut available = available.into_iter();
-    choices.retain_mut(|quality| match available.next() {
-        Some(Ok((dimensions, seconds))) => {
-            item.duration = item.duration.or(seconds);
-            if let Some((width, height)) = dimensions {
-                quality.width = Some(width);
-                quality.height = Some(height);
+        let Some(url) = quality
+            .url
+            .as_deref()
+            .and_then(|url| discovery::url(url).ok())
+        else {
+            continue;
+        };
+        if !has_ffmpeg {
+            continue;
+        }
+        match playlist(client, url, referer).await {
+            Ok(Playlist::Media(media)) => {
+                item.duration = item.duration.or(media.seconds);
+                qualities.push(quality);
             }
-            true
+            Ok(Playlist::Master(variants)) => {
+                let available =
+                    stream::iter(variants.into_iter().take(16).map(|variant| async move {
+                        let result = variant_media(client, &variant, referer).await;
+                        (variant, result)
+                    }))
+                    .buffered(4)
+                    .collect::<Vec<_>>()
+                    .await;
+                for (variant, result) in available {
+                    match result {
+                        Ok((video, _)) => {
+                            item.duration = item.duration.or(video.seconds);
+                            let (width, height) = variant
+                                .dimensions
+                                .map_or((None, quality.height), |(w, h)| (Some(w), Some(h)));
+                            qualities.push(discovery::Quality {
+                                url: quality.url.clone(),
+                                format_id: Some(variant.id()),
+                                width,
+                                height,
+                                ..quality.clone()
+                            });
+                        }
+                        Err("changed") => changed = true,
+                        Err(_) => {}
+                    }
+                }
+            }
+            Err("changed") => changed = true,
+            Err(_) => {}
         }
-        _ => false,
-    });
+    }
+    qualities.sort_by_key(|quality| std::cmp::Reverse(quality.resolution()));
+    let mut seen = std::collections::HashSet::new();
+    qualities.retain(|quality| seen.insert((quality.url.clone(), quality.format_id.clone())));
+    qualities.truncate(16);
+    item.qualities = qualities;
     changed
 }
 
 pub async fn inspect_resolution(
     client: &Client,
     url: Url,
+    format_id: Option<&str>,
     referer: Option<&str>,
 ) -> AppResult<(u32, u32)> {
     const SAMPLE_LIMIT: usize = 512 * 1024;
     static PROBES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
-    if !is_playlist(&url) {
+    if !is_playlist(&url) && !format_id.is_some_and(valid_format_id) {
         return Err("unsupported");
     }
     let _permit = PROBES.try_acquire().map_err(|_| "unknown")?;
-    let (media, dimensions) = media_playlist(client, url, referer).await?;
+    let (media, _, dimensions) = selected_media(client, url, format_id, referer).await?;
     if let Some(dimensions) = dimensions {
         return Ok(dimensions);
     }
@@ -243,9 +438,17 @@ pub async fn inspect_resolution(
         .initialization
         .or_else(|| media.segments.into_iter().next())
         .ok_or("unsupported")?;
+    let (start, end) = segment
+        .range
+        .map_or((0, SAMPLE_LIMIT as u64 - 1), |(start, end)| {
+            (
+                start,
+                end.min(start.saturating_add(SAMPLE_LIMIT as u64 - 1)),
+            )
+        });
     let mut request = client
-        .get(segment)
-        .header(RANGE, format!("bytes=0-{}", SAMPLE_LIMIT - 1))
+        .get(segment.url)
+        .header(RANGE, format!("bytes={start}-{end}"))
         .timeout(Duration::from_secs(8));
     if let Some(referer) = referer {
         request = request.header(REFERER, referer);
@@ -256,6 +459,14 @@ pub async fn inspect_resolution(
         .map_err(|_| "network")?
         .error_for_status()
         .map_err(|_| "httpError")?;
+    if segment.range.is_some()
+        && (response.status() != StatusCode::PARTIAL_CONTENT
+            || !downloads::content_range(&response).is_some_and(|(from, through, len)| {
+                (from, through) == (start, end) && through < len
+            }))
+    {
+        return Err("changed");
+    }
     let mut bytes = Vec::new();
     while bytes.len() < SAMPLE_LIMIT {
         let Some(chunk) = response.chunk().await.map_err(|_| "network")? else {
@@ -326,147 +537,48 @@ pub async fn inspect_resolution(
     ))
 }
 
-fn clear_mp4_bytes(mut data: &[u8], initialization: bool) -> bool {
-    let (metadata, payload): (&[u8; 4], &[u8; 4]) = if initialization {
-        (b"moov", b"ftyp")
-    } else {
-        (b"moof", b"mdat")
-    };
-    let mut found_metadata = false;
-    let mut found_payload = false;
-    while let Some(header) = data.first_chunk::<8>() {
-        let mut size = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
-        if size == 1 {
-            let Some(extended) = data.get(8..16) else {
-                return false;
-            };
-            let Ok(extended_size) =
-                usize::try_from(u64::from_be_bytes(extended.try_into().unwrap()))
-            else {
-                return false;
-            };
-            if extended_size < 16 {
-                return false;
-            }
-            size = extended_size;
-        } else if size == 0 {
-            size = data.len();
-        }
-        if size < 8 || size > data.len() {
-            return false;
-        }
-        let kind = &header[4..];
-        if kind == b"pssh" {
-            return false;
-        }
-        if kind == metadata {
-            if data[8..size]
-                .windows(4)
-                .any(|box_type| matches!(box_type, b"pssh" | b"sinf" | b"encv" | b"enca" | b"senc"))
-            {
-                return false;
-            }
-            found_metadata = true;
-        }
-        found_payload |= kind == payload;
-        data = &data[size..];
-    }
-    data.is_empty() && found_metadata && found_payload
-}
-
 pub async fn save(
     client: &Client,
     url: Url,
+    format_id: Option<&str>,
     referer: Option<&str>,
     dir: &Path,
     progress: impl Fn(u64),
 ) -> AppResult<u64> {
-    let ffmpeg = youtube::ffmpeg()?;
-    let (
-        MediaPlaylist {
-            initialization,
-            segments,
-            ..
-        },
-        _,
-    ) = media_playlist(client, url, referer).await?;
-    let fragmented = initialization.is_some();
-    let transport = dir.join(if fragmented {
-        "fragments.mp4"
-    } else {
-        "stream.ts"
-    });
-    let mut target = File::create(&transport).await.map_err(|_| "disk")?;
-    let mut bytes = 0;
-    for (index, segment) in initialization.into_iter().chain(segments).enumerate() {
-        let mut response = get(client, segment, referer, Duration::from_secs(60)).await?;
-        let data = discovery::read_limited(&mut response, 32 * 1024 * 1024, "unsupported").await?;
-        let valid = if fragmented {
-            clear_mp4_bytes(&data, index == 0)
-        } else {
-            data.len() >= 188 && data[0] == 0x47 && data.len() % 188 == 0
-        };
-        if !valid {
-            return Err("unsupported");
-        }
-        target.write_all(&data).await.map_err(|_| "disk")?;
-        bytes += data.len() as u64;
-        progress(bytes);
-    }
-    target.flush().await.map_err(|_| "disk")?;
-    drop(target);
-    let output = dir.join("stream.mp4");
-    let mut command = tokio::process::Command::new(ffmpeg);
-    command
-        .creation_flags(0x08000000)
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .args([
-            "-nostdin",
-            "-y",
-            "-xerror",
-            "-protocol_whitelist",
-            "file",
-            "-f",
-            if fragmented { "mov" } else { "mpegts" },
-        ]);
-    if fragmented {
-        command.args(["-enable_drefs", "0"]);
-    }
-    let status = command
-        .arg("-i")
-        .arg(&transport)
-        .args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0?",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-        ])
-        .arg(&output)
-        .status()
-        .await
-        .map_err(|_| "mergeFailed")?;
-    let bytes = tokio::fs::metadata(output)
-        .await
-        .map_err(|_| "mergeFailed")?
-        .len();
-    if !status.success() || bytes == 0 {
-        return Err("mergeFailed");
-    }
-    Ok(bytes)
+    let (video, audio, _) = selected_media(client, url, format_id, referer).await?;
+    crate::stream::save(
+        client,
+        &video,
+        audio.as_ref(),
+        referer,
+        &dir.join("hls"),
+        progress,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_a_master_with_two_qualities_and_default_audio() {
+        let base = Url::parse("https://example.org/list/index.m3u8").unwrap();
+        let master = "#EXTM3U\n\
+            #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"main\",NAME=\"English, stereo\",DEFAULT=YES,URI=\"audio.m3u8\"\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=1280x720,AUDIO=\"main\"\n720.m3u8\n\
+            #EXT-X-STREAM-INF:BANDWIDTH=300000,RESOLUTION=640x360,AUDIO=\"main\"\n360.m3u8";
+        let Ok(Playlist::Master(variants)) = parse(&base, master) else {
+            panic!("multivariant playlist should be recognized");
+        };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].dimensions, Some((1280, 720)));
+        assert_eq!(variants[0].id(), "hls:900000:1280:720");
+        assert_eq!(
+            variants[1].audio.as_ref().unwrap().path(),
+            "/list/audio.m3u8"
+        );
+    }
 
     #[test]
     fn accepts_only_clear_complete_transport_streams() {
@@ -477,22 +589,20 @@ mod tests {
             initialization: None,
             segments,
             seconds,
+            ..
         })) = parse(&base, clear)
         else {
             panic!("clear VOD with one segment should work");
         };
         assert_eq!(
-            segments[0].as_str(),
+            segments[0].url.as_str(),
             "https://example.org/list/seg.ts?signature=keep"
         );
         assert_eq!(seconds, Some(7.5));
         let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=30000,RESOLUTION=1280x720\n720.m3u8";
         assert!(matches!(
             parse(&base, master),
-            Ok(Playlist::Variant {
-                dimensions: Some((1280, 720)),
-                ..
-            })
+            Ok(Playlist::Master(variants)) if variants[0].dimensions == Some((1280, 720))
         ));
         for unsupported in [
             clear.replace("#EXTINF", "#EXT-X-KEY:METHOD=AES-128,URI=\"key\"\n#EXTINF"),
@@ -517,12 +627,14 @@ mod tests {
         else {
             panic!("clear fragmented MP4 should work");
         };
-        assert_eq!(init.as_str(), "https://example.org/list/init.mp4?token=1");
         assert_eq!(
-            segments[0].as_str(),
+            init.url.as_str(),
+            "https://example.org/list/init.mp4?token=1"
+        );
+        assert_eq!(
+            segments[0].url.as_str(),
             "https://example.org/list/chunk.m4s?token=2"
         );
-        assert!(parse(&base, &clear.replace("chunk.m4s", "chunk.ts")).is_err());
         assert!(
             parse(
                 &base,
@@ -533,7 +645,7 @@ mod tests {
         assert!(
             parse(
                 &base,
-                &clear.replace("?token=1\"", "?token=1\",BYTERANGE=\"10@0\"")
+                &clear.replace("?token=1\"", "?token=1\",BYTERANGE=\"0@0\"")
             )
             .is_err()
         );
@@ -541,5 +653,20 @@ mod tests {
         assert!(!clear_mp4_bytes(b"\0\0\0\x08ftyp\0\0\0\x0cmoovencv", true));
         assert!(clear_mp4_bytes(b"\0\0\0\x08moof\0\0\0\x08mdat", false));
         assert!(!clear_mp4_bytes(b"\0\0\0\x0cmoofsenc\0\0\0\x08mdat", false));
+    }
+
+    #[test]
+    fn verifies_byte_ranges_and_contiguous_offsets() {
+        let base = Url::parse("https://example.org/list/index.m3u8").unwrap();
+        let text = "#EXTM3U\n#EXT-X-MAP:URI=\"media.mp4\",BYTERANGE=\"8@0\"\n\
+            #EXTINF:1,\n#EXT-X-BYTERANGE:24@8\nmedia.mp4\n\
+            #EXTINF:1,\n#EXT-X-BYTERANGE:16\nmedia.mp4\n#EXT-X-ENDLIST";
+        let Ok(Playlist::Media(track)) = parse(&base, text) else {
+            panic!("ranged VOD");
+        };
+        assert_eq!(track.initialization.unwrap().range, Some((0, 7)));
+        assert_eq!(track.segments[0].range, Some((8, 31)));
+        assert_eq!(track.segments[1].range, Some((32, 47)));
+        assert!(parse(&base, &text.replace("16\nmedia.mp4", "16\nother.mp4")).is_err());
     }
 }

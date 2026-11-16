@@ -104,7 +104,8 @@ function button(label, handler, glyph, iconOnly = false) {
   return node;
 }
 function empty(node, glyph, title, hint) {
-  node.replaceChildren(icon(glyph), element("h2", "", t(title)), element("p", "", t(hint)));
+  node.replaceChildren(icon(glyph), element("h2", "", t(title)));
+  if (hint) node.append(element("p", "", t(hint)));
 }
 function notify(key) {
   lastNotice = key;
@@ -515,9 +516,9 @@ function qualityPicker(item, showSizes = false) {
     for (const [index, quality] of item.qualities.entries()) {
       if (document.activeElement !== control || !control.isConnected) break;
       if (quality.size != null || quality.format_id || !quality.url
-          || new URL(quality.url).pathname.toLowerCase().endsWith(".m3u8")) continue;
+          || /\.(m3u8|mpd)$/i.test(new URL(quality.url).pathname)) continue;
       const source = { url: quality.url };
-      await inspectSize(source, item.source_origin);
+      await inspectSize(source, quality.source_origin ?? item.source_origin);
       if (source.size > 0 && control.isConnected) {
         const option = control.options[index];
         option.textContent = `${option.dataset.name} · ${sizeText(source.size)}`;
@@ -535,9 +536,10 @@ function probeQuality(item, quality) {
   if (!quality.url) return Promise.resolve(null);
   if (!qualityProbes.has(quality)) {
     const url = new URL(quality.url);
-    const pending = url.pathname.toLowerCase().endsWith(".m3u8")
-      ? invoke("inspect_stream_resolution", { url: quality.url, sourceOrigin: item.source_origin })
-      : invoke("set_preview_source", { url: quality.url, sourceOrigin: item.source_origin }).then(async () => {
+    const sourceOrigin = quality.source_origin ?? item.source_origin;
+    const pending = /^(hls|dash):/.test(quality.format_id ?? "") || /\.(m3u8|mpd)$/i.test(url.pathname)
+      ? invoke("inspect_stream_resolution", { url: quality.url, sourceOrigin, formatId: quality.format_id })
+      : invoke("set_preview_source", { url: quality.url, sourceOrigin }).then(async () => {
         const video = { url: quality.url, kind: "video" };
         await probeMedia(video, new AbortController().signal);
         return video.width && video.height ? [video.width, video.height] : null;
@@ -625,13 +627,14 @@ function renderGallery() {
   $("url").setAttribute("aria-invalid", String(app.error === "invalidUrl"));
   $("gallery").setAttribute("aria-busy", String(app.phase === "loading" || app.sortLoading));
   $("searchError").textContent = app.error ? t(app.error) : "";
-  $("openBlockedPage").hidden = !["pageForbidden", "pageUnauthorized"].includes(app.error);
+  $("openBlockedPage").hidden = !["pageForbidden", "pageUnauthorized", "pageBrowserChallenge"].includes(app.error);
   $("collectionStatus").hidden = !hasResults || !app.collectionPartial;
   $("collectionStatus").textContent = t("collectionPartial");
   if (app.phase === "loading") {
     $("resultsStatus").replaceChildren(icon("search"), element("p", "", t(app.collectionScan ? "scanningCollection" : "searching")));
   } else if (app.phase === "error") {
-    empty($("resultsStatus"), "search", "searchErrorTitle", "searchErrorHint");
+    const hint = app.error === "pageBrowserChallenge" ? null : "searchErrorHint";
+    empty($("resultsStatus"), "search", "searchErrorTitle", hint);
   } else if (app.phase === "initial") {
     empty($("resultsStatus"), "search", "initialTitle", "initialHint");
   } else if (app.items.length) {
@@ -684,6 +687,11 @@ function positionSearchMenus() {
 window.addEventListener("resize", positionSearchMenus);
 window.addEventListener("scroll", positionSearchMenus, { passive: true });
 
+async function openFileInWindows(id) {
+  try { await invoke("open_saved_file", { id }); }
+  catch (error) { notify(errorKey(error)); }
+}
+
 function mediaCard(item, canBatch = false) {
     const card = element("article", "card");
     card.dataset.url = item.url;
@@ -710,6 +718,7 @@ function mediaCard(item, canBatch = false) {
     });
     const thumb = mediaThumbnail(item, "thumb");
     if (item.local) {
+      open.addEventListener("dblclick", () => void openFileInWindows(item.id));
       const media = thumb.querySelector("img,video");
       media?.addEventListener(media.tagName === "VIDEO" ? "loadedmetadata" : "load", () => {
         const width = media.videoWidth || media.naturalWidth;
@@ -1163,8 +1172,9 @@ for (const [triggerId, menuId] of [...savedMenuGroups, ["findMediaType", "filter
       positionSearchMenus();
     } else {
       const anchor = trigger.getBoundingClientRect();
+      const top = Math.min(anchor.bottom + 6, innerHeight - menu.offsetHeight - 8);
       menu.style.left = `${Math.max(8, anchor.right - menu.offsetWidth)}px`;
-      menu.style.top = `${Math.min(anchor.bottom + 6, innerHeight - menu.offsetHeight - 8)}px`;
+      menu.style.top = `${top}px`;
     }
     (menu.querySelector('[aria-checked="true"]') ?? menu.querySelector("button:not(:disabled)"))?.focus();
   });
@@ -1387,14 +1397,26 @@ function youtubeId(item) {
 
 let previewItems = [];
 let previewIndex = -1;
+const previewStrip = $("previewStrip");
+const previewStripObserver = new IntersectionObserver(entries => {
+  for (const { target, isIntersecting } of entries) {
+    if (!isIntersecting) continue;
+    previewStripObserver.unobserve(target);
+    const item = previewItems[Number(target.dataset.previewIndex)];
+    if (!item || !target.isConnected) continue;
+    const thumbnail = mediaThumbnail(item, "strip-image");
+    thumbnail.classList.toggle("strip-video", item.kind === "video");
+    target.append(thumbnail);
+  }
+}, { root: previewStrip, rootMargin: "0px 100px" });
 
 function openPreview(item) {
   detailFrames.get($("findDetails"))?.();
-  if (!item || $("zoom").open) return;
+  const dialog = $("zoom");
+  if (!item || dialog.open) return;
   previewItems = item.local ? savedItems() : visibleItems();
   const index = previewItems.indexOf(item);
   if (index < 0) return;
-  const strip = $("previewStrip");
   clearPreviewStrip();
   $("previewRail").hidden = previewItems.length < 2;
   if (previewItems.length > 1) {
@@ -1402,21 +1424,21 @@ function openPreview(item) {
     previewItems.forEach((candidate, position) => {
       const control = button(candidate.name, () => selectPreview(position), null, true);
       control.tabIndex = -1;
-      const thumbnail = mediaThumbnail(candidate, "strip-image");
-      if (candidate.kind === "video") thumbnail.classList.add("strip-video");
-      control.append(thumbnail);
+      control.dataset.previewIndex = position;
       thumbnails.append(control);
+      previewStripObserver.observe(control);
     });
-    strip.append(thumbnails);
+    previewStrip.append(thumbnails);
   }
   previewIndex = -1;
   $("zoomInformation").open = false;
-  $("zoom").showModal();
+  dialog.showModal();
   selectPreview(index);
 }
 
 function clearPreviewStrip() {
-  const strip = $("previewStrip");
+  const strip = previewStrip;
+  previewStripObserver.disconnect();
   for (const img of strip.querySelectorAll("img")) observer.unobserve(img);
   for (const tile of strip.querySelectorAll(".strip-video")) savedVideoObserver.unobserve(tile);
   for (const video of strip.querySelectorAll("video[src]")) {
@@ -1464,7 +1486,7 @@ function selectPreview(index) {
     active?.focus({ preventScroll: true });
   }
   scrollPreviewThumbnail();
-  if (!item.local) {
+  if (!item.local && app.focus !== item) {
     app.focus = item;
     updateSelection();
   }
@@ -1495,7 +1517,8 @@ function durationText(value) {
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
 }
 function mediaExtension(item) {
-  return item.extension ?? [new URL(item.url).pathname, item.name]
+  return item.extension ?? item.qualities?.find(quality => quality.url === item.url)?.extension
+    ?? [new URL(item.url).pathname.replace(/\/+$/, ""), item.name]
     .map(value => value.match(/\.(mp4|m4v|webm|jpe?g|png|gif|svg|ico|webp|avif|mp3|m4a|wav|ogg|oga)$/i)?.[1])
     .find(Boolean);
 }
@@ -1536,8 +1559,10 @@ function renderPreview(item) {
   const id = item.local ? null : youtubeId(item);
   const directMedia = (item.kind === "video" || (item.local && item.kind === "audio")) && !item.preview_only && !id;
   const frame = element("div", "preview-frame");
+  const poster = item.preview ? element("img") : null;
   let player;
   let playing = false;
+  let playbackFailed = false;
   const status = element("p", "", t(item.preview ? "previewLoading" : "previewUnavailable"));
   status.setAttribute("role", "status");
   frame.append(icon(item.kind), status);
@@ -1584,15 +1609,31 @@ function renderPreview(item) {
     controls.append(check, status);
     actions.append(controls);
   }
-  const openSavedFile = item.local ? button(t("openSavedFile"), async () => {
-    try { await invoke("open_saved_file", { id: item.id }); }
-    catch (error) { notify(errorKey(error)); }
-  }) : null;
+  const openSavedFile = item.local
+    ? button(t("openSavedFile"), () => void openFileInWindows(item.id))
+    : null;
   if (openSavedFile) {
     openSavedFile.hidden = true;
     actions.append(openSavedFile);
   }
   if (id || directMedia) {
+    const errorNote = element("p", "preview-note");
+    errorNote.setAttribute("role", "status");
+    errorNote.hidden = true;
+    const showPlaybackError = () => {
+      if (!frame.isConnected || !player?.isConnected) return;
+      playing = false;
+      playbackFailed = true;
+      const message = t(item.local ? "localPlaybackError" : "playbackError");
+      status.textContent = message;
+      errorNote.textContent = message;
+      errorNote.hidden = !item.preview;
+      if (poster?.complete && poster.naturalWidth) frame.replaceChildren(poster);
+      else frame.replaceChildren(icon(item.kind), status);
+      play.hidden = false;
+      if (openSavedFile) openSavedFile.hidden = false;
+      if (document.activeElement === document.body) play.focus();
+    };
     const start = () => {
       if (playing && directMedia) {
         void player.play().then(() => { play.hidden = true; }, () => {});
@@ -1600,7 +1641,9 @@ function renderPreview(item) {
       }
       if (playing) return;
       playing = true;
+      playbackFailed = false;
       play.hidden = true;
+      errorNote.hidden = true;
       if (openSavedFile) openSavedFile.hidden = true;
       if (id) {
         player = element("iframe", "preview-player");
@@ -1617,34 +1660,32 @@ function renderPreview(item) {
         player.setAttribute("controlslist", "nodownload");
         player.setAttribute("aria-label", item.name);
         player.addEventListener("error", () => {
-          if (!frame.isConnected) return;
-          playing = false;
-          status.textContent = t(item.local ? "localPlaybackError" : "playbackError");
-          frame.replaceChildren(icon(item.kind), status);
-          play.hidden = false;
-          if (openSavedFile) openSavedFile.hidden = false;
-          if (document.activeElement === document.body) play.focus();
+          if (player === frame.firstElementChild) showPlaybackError();
         });
         player.addEventListener("loadedmetadata", () => updateMediaDetails(item, player, details));
       }
       frame.replaceChildren(player);
       if (directMedia) {
         const current = player;
-        const configure = !item.local ? invoke("set_preview_source", {
-          url: item.url, sourceOrigin: item.source_origin
-        }).catch(() => {}) : Promise.resolve();
-        void configure.then(() => {
+        const formatId = item.qualities?.[item.qualityIndex ?? 0]?.format_id;
+        const configure = item.local ? Promise.resolve(item.url) : invoke("set_preview_source", {
+          url: item.url, sourceOrigin: item.source_origin,
+          formatId: formatId?.startsWith("extractor:") ? formatId : undefined
+        });
+        void configure.then(src => {
           if (!current.isConnected) return;
-          current.src = item.url;
+          current.src = src;
           return current.play().catch(error => {
             if (error.name === "NotAllowedError" && current.isConnected) play.hidden = false;
           });
+        }, () => {
+          if (current.isConnected) showPlaybackError();
         });
       }
     };
     const play = button(t(item.kind === "audio" ? "playAudio" : "playVideo"), start, "play");
     play.classList.add("primary");
-    actions.append(play);
+    actions.append(play, errorNote);
     if (id) actions.append(button(t("openYoutube"), async () => {
       try { await invoke("open_youtube", { id }); }
       catch (error) { notify(errorKey(error)); }
@@ -1656,8 +1697,8 @@ function renderPreview(item) {
   }
   $("zoomDetails").append(metadata);
 
-  if (item.preview) {
-    const img = element("img");
+  if (poster) {
+    const img = poster;
     img.alt = searchMediaName(item);
     img.addEventListener("load", () => {
       if (!frame.isConnected || playing) return;
@@ -1670,15 +1711,15 @@ function renderPreview(item) {
       }
     });
     img.addEventListener("error", () => {
-      if (!frame.isConnected || playing) return;
+      if (!frame.isConnected || playing || playbackFailed) return;
       status.textContent = t("previewUnavailable");
       if (openSavedFile) openSavedFile.hidden = false;
     });
     const source = item.local ? Promise.resolve(item.preview) : previewData(item.preview, true);
     source.then(data => {
-      if (!frame.isConnected || playing) return;
+      if (!frame.isConnected) return;
       if (data) img.src = data;
-      else status.textContent = t("previewUnavailable");
+      else if (!playing && !playbackFailed) status.textContent = t("previewUnavailable");
     });
   }
   if (item.size == null && !item.preview_only && !id && !item.local) {
@@ -1932,7 +1973,7 @@ async function downloadSelected(selection) {
         size: quality ? quality.size : item.size,
         preview_only: item.preview_only,
         format_id: quality?.format_id,
-        source_origin: item.source_origin
+        source_origin: quality?.source_origin ?? item.source_origin
       };
     });
     await invoke("enqueue", { items });
@@ -2157,6 +2198,12 @@ function renderQueue() {
       const info = element("td", "job-info");
       const title = button(job.name, () => { selectedJob = job.id; renderQueue(); });
       title.className = "job-name";
+      info.addEventListener("dblclick", () => {
+        const current = app.queue.find(entry => entry.id === job.id);
+        if (current?.status === "completed" && !current.browser && current.file) {
+          void openFileInWindows(current.id);
+        }
+      });
       const meta = element("div", "job-meta");
       info.append(title, meta);
       const size = element("td", "job-size");

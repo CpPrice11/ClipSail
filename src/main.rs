@@ -1,13 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dash;
 mod direct;
 mod discovery;
 mod downloads;
+mod extractor;
 mod firefox;
 mod hls;
 mod paths;
 mod playback;
 mod saved_file;
+mod stream;
 mod twitter;
 mod updater;
 mod youtube;
@@ -245,9 +248,34 @@ async fn find_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Vec<Me
             }
         }
     }
-    let (videos, page) = tokio::join!(twitter::find(parsed), find_page(&state.client, &url));
-    let Some(mut videos) = videos else {
-        return page;
+    let (videos, page) = tokio::join!(
+        twitter::find(parsed.clone()),
+        find_page(&state.client, &url)
+    );
+    let mut videos = if let Some(videos) = videos {
+        videos
+    } else {
+        let usable = page.as_ref().is_ok_and(|items| {
+            items.iter().any(|item| {
+                !item.preview_only
+                    && (item.url == parsed.as_str()
+                        || item.kind == discovery::Kind::Video
+                            && (!item.qualities.is_empty()
+                                || discovery::file_format(&item.name)
+                                    .is_some_and(|(_, kind)| kind == discovery::Kind::Video)))
+            })
+        });
+        if usable
+            || discovery::file_format(parsed.path()).is_some()
+            || discovery::is_hls(&parsed)
+            || discovery::is_dash(&parsed)
+        {
+            return page;
+        }
+        let Some(video) = extractor::find(&state.client, &parsed).await else {
+            return page;
+        };
+        vec![video]
     };
     if let Ok(items) = page {
         let remaining = discovery::GALLERY_LIMIT - videos.len();
@@ -265,18 +293,15 @@ async fn find_page(client: &reqwest::Client, url: &str) -> AppResult<Vec<Media>>
     let mut best = Vec::new();
     let mut best_count = 0;
     for attempt in 0..=3 {
-        let mut items = match discovery::find(client, url, attempt > 0).await {
+        let items = match discovery::find(client, url, attempt > 0).await {
             Err(_) if attempt > 0 => break,
             result => result?,
         };
-        let mut changed = false;
-        for item in &mut items {
-            changed |= hls::retain_available(client, item).await;
-        }
-        let count = items.iter().map(|item| item.qualities.len()).sum();
+        let (available, changed) = check_streams(client, items).await;
+        let count = available.iter().map(|item| item.qualities.len()).sum();
         // A refreshed page can supply new CDN links without discarding a better result.
-        if attempt == 0 || (!items.is_empty() && count >= best_count) {
-            best = items;
+        if attempt == 0 || (!available.is_empty() && count >= best_count) {
+            best = available;
             best_count = count;
         }
         if !changed {
@@ -284,6 +309,33 @@ async fn find_page(client: &reqwest::Client, url: &str) -> AppResult<Vec<Media>>
         }
     }
     Ok(best)
+}
+
+async fn check_streams(client: &reqwest::Client, items: Vec<Media>) -> (Vec<Media>, bool) {
+    use futures_util::{StreamExt, stream};
+
+    let checked = stream::iter(items.into_iter().map(|mut item| async move {
+        let is_stream = item.qualities.iter().any(|quality| {
+            quality.url.as_deref() == Some(item.url.as_str())
+                && (hls::is_stream_quality(quality) || dash::is_stream_quality(quality))
+        });
+        let mut changed = hls::retain_available(client, &mut item).await;
+        changed |= dash::retain_available(client, &mut item).await;
+        if is_stream && item.qualities.is_empty() {
+            item.preview_only = true;
+            (item.preview.is_some().then_some(item), changed)
+        } else {
+            (Some(item), changed)
+        }
+    }))
+    .buffered(4)
+    .collect::<Vec<_>>()
+    .await;
+    let changed = checked.iter().any(|(_, changed)| *changed);
+    (
+        checked.into_iter().filter_map(|(item, _)| item).collect(),
+        changed,
+    )
 }
 
 #[tauri::command]
@@ -297,7 +349,9 @@ async fn find_collection(
             partial: false,
         });
     }
-    discovery::find_collection(&state.client, &url).await
+    let mut collection = discovery::find_collection(&state.client, &url).await?;
+    (collection.items, _) = check_streams(&state.client, collection.items).await;
+    Ok(collection)
 }
 
 #[derive(Serialize)]
@@ -423,6 +477,7 @@ async fn inspect_stream_resolution(
     state: State<'_, Arc<App>>,
     url: String,
     source_origin: Option<String>,
+    format_id: Option<String>,
 ) -> AppResult<(u32, u32)> {
     let target = discovery::url(&url)?;
     let referer = source_origin
@@ -430,7 +485,22 @@ async fn inspect_stream_resolution(
         .map(discovery::url)
         .transpose()?
         .and_then(|source| discovery::media_referer(&source, &target));
-    hls::inspect_resolution(&state.client, target, referer.as_deref()).await
+    if dash::is_stream(&target, format_id.as_deref()) {
+        return dash::inspect_resolution(
+            &state.client,
+            target,
+            format_id.as_deref(),
+            referer.as_deref(),
+        )
+        .await;
+    }
+    hls::inspect_resolution(
+        &state.client,
+        target,
+        format_id.as_deref(),
+        referer.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -901,6 +971,11 @@ fn open_page(url: String) -> AppResult<()> {
 
 #[tauri::command]
 fn open_saved_file(state: State<'_, Arc<App>>, id: Uuid) -> AppResult<()> {
+    use windows::{
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
+        core::{HSTRING, PCWSTR},
+    };
+
     let job = state
         .lock()
         .jobs
@@ -908,14 +983,18 @@ fn open_saved_file(state: State<'_, Arc<App>>, id: Uuid) -> AppResult<()> {
         .find(|job| job.id == id && job.status == Status::Completed)
         .cloned()
         .ok_or("disk")?;
-    let file = saved_media(job).ok_or("disk")?;
-    if !file.path.is_absolute() {
+    let (path, _) = saved_file::resolve(&job.folder, job.file.as_deref().ok_or("disk")?)
+        .ok_or("disk")?;
+    if !path.is_absolute() {
         return Err("disk");
     }
-    std::process::Command::new("explorer.exe")
-        .arg(file.path)
-        .spawn()
-        .map_err(|_| "disk")?;
+    let path = HSTRING::from(path.as_os_str());
+    let result = unsafe {
+        ShellExecuteW(None, PCWSTR::null(), &path, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL)
+    };
+    if result.0 as isize <= 32 {
+        return Err("disk");
+    }
     Ok(())
 }
 

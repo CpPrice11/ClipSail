@@ -2040,7 +2040,7 @@ dependencies = [
 
 [[package]]
 name = "media-downloader"
-version = "0.1.60"
+version = "0.1.69"
 dependencies = [
  "base64 0.22.1",
  "dirs",
@@ -2048,6 +2048,8 @@ dependencies = [
  "futures-util",
  "html5ever",
  "percent-encoding",
+ "quick-xml 0.39.3",
+ "regex",
  "reqwest 0.12.28",
  "rfd",
  "serde",

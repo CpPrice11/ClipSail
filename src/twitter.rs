@@ -96,6 +96,7 @@ fn mp4(format: Format) -> Option<Quality> {
     }
     Some(Quality {
         url: Some(url.to_string()),
+        source_origin: None,
         format_id: None,
         extension: format.ext,
         width: format.width,

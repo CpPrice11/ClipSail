@@ -15,9 +15,9 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    direct,
+    dash, direct,
     discovery::{self, AppResult, Kind},
-    hls, youtube,
+    extractor, hls, youtube,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -72,7 +72,11 @@ pub fn prepare_selection(
             .transpose()?
             .and_then(|source| discovery::media_referer(&source, &url));
         if let Some(id) = &item.format_id
-            && (item.direct || youtube::video_id(&url).is_none() || !youtube::valid_format_id(id))
+            && (item.direct
+                || !(extractor::valid_format_id(id)
+                    || hls::valid_format_id(id)
+                    || dash::valid_format_id(id)
+                    || youtube::video_id(&url).is_some() && youtube::valid_format_id(id)))
         {
             return Err("qualityUnavailable");
         }
@@ -252,7 +256,7 @@ fn etag(response: &Response) -> Option<String> {
     (value.starts_with('"') && value.ends_with('"') && value.len() >= 2).then(|| value.to_owned())
 }
 
-fn content_range(response: &Response) -> Option<(u64, u64, u64)> {
+pub(crate) fn content_range(response: &Response) -> Option<(u64, u64, u64)> {
     let value = response
         .headers()
         .get(CONTENT_RANGE)?
@@ -340,6 +344,7 @@ fn media_download_name(
     response: &Response,
     job: &Job,
     is_youtube: bool,
+    is_extracted: bool,
 ) -> AppResult<(String, &'static str)> {
     let (extension, kind) = discovery::response_format(response).ok_or("unsupported")?;
     let name = if is_youtube {
@@ -352,6 +357,15 @@ fn media_download_name(
             &job.name
         };
         discovery::safe_media_name(name, extension)
+    } else if is_extracted {
+        if kind != Kind::Video {
+            return Err("unsupported");
+        }
+        let stem = job
+            .name
+            .strip_suffix(&format!(".{extension}"))
+            .unwrap_or(&job.name);
+        discovery::safe_media_name(stem, extension)
     } else if job.browser_origin.is_some() {
         if discovery::file_format(&job.name).map(|(_, declared)| declared) != Some(kind) {
             return Err("unsupported");
@@ -425,7 +439,44 @@ pub async fn run(
     report: impl Fn(Update) + Send + Sync,
 ) -> AppResult<()> {
     let url = discovery::url(&job.url)?;
-    let youtube_id = (!job.direct).then(|| youtube::video_id(&url)).flatten();
+    let saved_format = job.format_id.as_deref();
+    let extracted =
+        match saved_format.filter(|value| !job.direct && extractor::valid_format_id(value)) {
+            Some(id) => Some(tokio::select! {
+                biased;
+                _ = stop.changed() => return Err("paused"),
+                result = extractor::resolve(&url, id) => result?,
+            }),
+            None => None,
+        };
+    let format_id = extracted
+        .as_ref()
+        .map_or(saved_format, |source| source.stream_id.as_deref());
+    let url = extracted.as_ref().map_or(url, |source| source.url.clone());
+    let referer = extracted.as_ref().map_or_else(
+        || {
+            job.browser_origin
+                .as_deref()
+                .or(job.source_origin.as_deref())
+        },
+        |source| source.referer.as_deref(),
+    );
+    let specialized_client = extracted
+        .as_ref()
+        .and_then(|source| source.user_agent.as_deref())
+        .map(discovery::client_with_user_agent)
+        .transpose()?;
+    let client = specialized_client.as_ref().unwrap_or(client);
+    let dash_stream = dash::is_stream(&url, format_id);
+    let stream = !job.direct
+        && if extracted.is_some() {
+            format_id.is_some()
+        } else {
+            dash_stream || hls::is_playlist(&url) || format_id.is_some_and(hls::valid_format_id)
+        };
+    let youtube_id = (!job.direct && !stream && extracted.is_none())
+        .then(|| youtube::video_id(&url))
+        .flatten();
     let (url, audio) = match &youtube_id {
         Some(id) => {
             tokio::select! {
@@ -441,25 +492,37 @@ pub async fn run(
     };
     let dir = job.folder.join(format!(".media-{}", job.id));
     fs::create_dir_all(&dir).map_err(|_| "disk")?;
-    if !job.direct && hls::is_playlist(&url) {
+    if stream {
+        let download = async {
+            let progress = |bytes| report(Update::Progress(bytes, None));
+            if dash_stream {
+                dash::save(client, url, format_id, referer, &dir, progress).await
+            } else {
+                hls::save(client, url, format_id, referer, &dir, progress).await
+            }
+        };
         let result = tokio::select! {
             biased;
             _ = stop.changed() => Err("paused"),
-            result = hls::save(client, url, job.source_origin.as_deref(), &dir, |bytes| {
-                report(Update::Progress(bytes, None));
-            }) => result,
+            result = download => result,
         };
         let final_result = result.and_then(|bytes| {
             if *stop.borrow() {
                 return Err("paused");
             }
-            let name = discovery::safe_media_name(&job.name, "mp4");
+            let stem = job
+                .name
+                .rsplit_once('.')
+                .filter(|(_, extension)| extension.eq_ignore_ascii_case("mp4"))
+                .map_or(job.name.as_str(), |(stem, _)| stem);
+            let name = discovery::safe_media_name(stem, "mp4");
             let name = publish_download(&dir.join("stream.mp4"), &job.folder, &name)?;
             report(Update::Completed(name, bytes));
             Ok(())
         });
-        // A restarted stream begins from the first segment.
-        let _ = fs::remove_dir_all(&dir);
+        if final_result.is_ok() {
+            let _ = fs::remove_dir_all(&dir);
+        }
         return final_result;
     }
     let manifest = dir.join("parts.json");
@@ -468,7 +531,7 @@ pub async fn run(
         .and_then(|b| serde_json::from_slice(&b).ok());
     let get = |url: reqwest::Url| {
         let request = client.get(url);
-        match job.browser_origin.as_ref().or(job.source_origin.as_ref()) {
+        match referer {
             Some(origin) => request.header(REFERER, origin),
             None => request,
         }
@@ -490,7 +553,8 @@ pub async fn run(
         (direct::name(&response)?, None)
     } else {
         status_ok(&response)?;
-        let (name, extension) = media_download_name(&response, job, youtube_id.is_some())?;
+        let (name, extension) =
+            media_download_name(&response, job, youtube_id.is_some(), extracted.is_some())?;
         (name, Some(extension))
     };
     if response.headers().contains_key(CONTENT_ENCODING)

@@ -152,6 +152,7 @@ fn variants(data: &Extracted, merge: bool) -> Vec<(Source, Quality, f64)> {
                 },
                 Quality {
                     url: None,
+                    source_origin: None,
                     format_id: Some(format_id),
                     extension: "mp4".to_owned(),
                     size,
