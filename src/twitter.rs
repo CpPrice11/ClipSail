@@ -91,7 +91,10 @@ fn mp4(format: Format) -> Option<Quality> {
         return None;
     }
     let url = cdn_url(&format.url, "video.twimg.com")?;
-    if discovery::file_format(url.path()) != Some(("mp4", Kind::Video)) {
+    if !matches!(
+        discovery::path_format(&url),
+        Some(("mp4" | "m4v", Kind::Video))
+    ) {
         return None;
     }
     Some(Quality {

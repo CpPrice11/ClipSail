@@ -18,6 +18,8 @@ pub struct VideoRequest {
     pub auto_start: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_file: Option<String>,
 }
 
 impl VideoRequest {
@@ -45,8 +47,13 @@ impl VideoRequest {
             || self.format_id.as_ref().is_some_and(|id| {
                 !youtube || !self.auto_start || !crate::youtube::valid_format_id(id)
             })
+            || self.video_file.as_deref().is_some_and(|ext| {
+                youtube || !self.auto_start || crate::discovery::video_extension(ext).is_none()
+            })
             || !(youtube
-                || matches!(extension.as_deref(), Some("mp4" | "webm"))
+                || self
+                    .extension(&media)
+                    .is_some_and(|ext| crate::discovery::video_extension(ext).is_some())
                 || self.auto_start
                     && matches!(
                         extension.as_deref(),
@@ -68,6 +75,16 @@ impl VideoRequest {
             return None;
         }
         Some(media)
+    }
+
+    pub fn extension(&self, media: &reqwest::Url) -> Option<&'static str> {
+        if is_youtube_video(media) && self.origin == "https://www.youtube.com" {
+            return Some("mp4");
+        }
+        self.video_file
+            .as_deref()
+            .and_then(crate::discovery::video_extension)
+            .or_else(|| crate::discovery::path_format(media).map(|(ext, _)| ext))
     }
 }
 

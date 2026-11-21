@@ -6,6 +6,7 @@ const list = document.getElementById("videos");
 const share = document.getElementById("share");
 const sharingStatus = document.getElementById("sharingStatus");
 const sharing = typeof api.runtime.getBrowserInfo === "function" ? { data_collection: ["websiteActivity"] } : null;
+const siteAccess = { origins: ["*://*/*"] };
 document.documentElement.lang = api.i18n.getUILanguage();
 document.title = t("app");
 for (const element of document.querySelectorAll("[data-message]")) {
@@ -18,11 +19,13 @@ const selected = new Set();
 const choices = new Map();
 let rows = [];
 let settingsTab;
-const send = (tab, message) => api.tabs.sendMessage(tab.id, message, { frameId: 0 });
+const send = (tab, message, frameId = 0) => api.tabs.sendMessage(tab.id, message, { frameId });
 const updateBulk = () => { bulk.disabled = selected.size === 0; };
 
-async function download(tab, id) {
-  const result = await send(tab, { type: "start", id, variant: choices.get(id) });
+async function download(tab, key) {
+  const item = rows.find(item => item.key === key);
+  if (!item) return "sourceChanged";
+  const result = await send(tab, { type: "start", id: item.id, variant: choices.get(key) }, item.frameId);
   return result.error ?? result.status;
 }
 
@@ -30,11 +33,11 @@ function addItem(tab, item) {
   const row = document.createElement("li");
   const check = document.createElement("input");
   check.type = "checkbox";
-  check.checked = selected.has(item.id);
+  check.checked = selected.has(item.key);
   check.setAttribute("aria-label", api.i18n.getMessage("selectNamed", item.name));
   check.addEventListener("change", () => {
-    if (check.checked) selected.add(item.id);
-    else selected.delete(item.id);
+    if (check.checked) selected.add(item.key);
+    else selected.delete(item.key);
     updateBulk();
   });
   const media = document.createElement("div");
@@ -51,7 +54,7 @@ function addItem(tab, item) {
     button.disabled = true;
     rowStatus.textContent = "";
     try {
-      rowStatus.textContent = t(await download(tab, item.id));
+      rowStatus.textContent = t(await download(tab, item.key));
     } catch {
       rowStatus.textContent = t("downloadFailed");
     } finally {
@@ -76,8 +79,8 @@ function addItem(tab, item) {
       option.value = variant.value;
       select.append(option);
     }
-    if (choices.has(item.id)) select.value = choices.get(item.id);
-    select.addEventListener("change", () => choices.set(item.id, select.value));
+    if (choices.has(item.key)) select.value = choices.get(item.key);
+    select.addEventListener("change", () => choices.set(item.key, select.value));
     media.append(select);
   }
   row.append(check, media, button);
@@ -123,23 +126,40 @@ async function initButtons(tab, hideHere) {
 }
 
 async function inspect(tab) {
-  const result = await send(tab, { type: "inspect" }).catch(async () => {
-    // A tab already open during installation may not have the content script yet.
+  // Injection also covers tabs that were open during installation or permission changes.
+  const frames = await api.scripting.executeScript({
+    target: { tabId: tab.id, allFrames: true }, files: ["content.js"]
+  }).catch(async () => {
     await api.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
-    return send(tab, { type: "inspect" });
+    return [{frameId: 0}];
   });
+  const inspected = await Promise.all(frames.slice(0, 60).map(async ({frameId}) => ({
+    frameId, result: await send(tab, { type: "inspect" }, frameId).catch(() => null)
+  })));
+  const root = inspected.find(frame => frame.frameId === 0)?.result;
+  const youtube = inspected.find(frame => frame.result?.youtubePlayerId);
   settingsTab = tab;
-  rows = result.items;
+  selected.clear();
+  choices.clear();
+  const seen = new Set();
+  rows = inspected.flatMap(({frameId, result}) => (result?.items ?? [])
+    .map(item => ({ ...item, frameId, key: frameId + ":" + item.id })))
+    .filter(item => {
+      const source = item.variants[0]?.value;
+      if (!source || seen.has(source)) return false;
+      seen.add(source);
+      return true;
+    }).slice(0, 60);
   document.getElementById("controls").hidden = bulk.hidden = rows.length === 0;
   render(tab);
   const quality = document.getElementById("chooseVideoQuality");
   const qualityControls = document.getElementById("youtubeQualityControls");
-  quality.hidden = !result.youtubePlayerId;
+  quality.hidden = !youtube;
   quality.onclick = async () => {
     quality.disabled = true;
     status.textContent = t("checkingQualities");
     try {
-      const answer = await send(tab, { type: "videoQualities", id: result.youtubePlayerId });
+      const answer = await send(tab, { type: "videoQualities", id: youtube.result.youtubePlayerId }, youtube.frameId);
       if (!answer.qualities?.length) {
         status.textContent = t(answer.error ?? "youtubeUnavailable");
         return;
@@ -155,9 +175,9 @@ async function inspect(tab) {
           for (const control of qualityControls.children) control.disabled = true;
           try {
             const response = await send(tab, {
-              type: "start", id: result.youtubePlayerId,
+              type: "start", id: youtube.result.youtubePlayerId,
               selection: { url: answer.url, formatId: variant.format_id }
-            });
+            }, youtube.frameId);
             status.textContent = t(response.error ?? response.status);
           } catch {
             status.textContent = t("downloadFailed");
@@ -178,11 +198,12 @@ async function inspect(tab) {
     }
   };
   const copyLink = document.getElementById("copyVideoLink");
-  copyLink.hidden = !result.videoLink;
-  status.textContent = result.youtubePlayerId || rows.length ? "" : t(result.error);
+  copyLink.hidden = !youtube?.result.videoLink;
+  status.textContent = youtube || rows.length ? ""
+    : t(inspected.some(frame => frame.result?.error === "protected") ? "protected" : "unavailable");
   copyLink.onclick = async () => {
     try {
-      const current = await send(tab, { type: "inspect" });
+      const current = await send(tab, { type: "inspect" }, youtube.frameId);
       if (!current.videoLink) {
         copyLink.hidden = true;
         status.textContent = t(current.error);
@@ -194,12 +215,12 @@ async function inspect(tab) {
       status.textContent = t("videoLinkCopyFailed");
     }
   };
-  await initButtons(tab, result.hideHere);
+  if (root) await initButtons(tab, root.hideHere);
 }
 
 filter.onchange = () => { selected.clear(); render(settingsTab); };
 document.getElementById("selectAll").onclick = () => {
-  for (const item of rows) if (filter.value === "all" || item.kind === filter.value) selected.add(item.id);
+  for (const item of rows) if (filter.value === "all" || item.kind === filter.value) selected.add(item.key);
   render(settingsTab);
 };
 document.getElementById("clearAll").onclick = () => { selected.clear(); render(settingsTab); };
@@ -218,6 +239,7 @@ bulk.onclick = async () => {
   render(settingsTab);
 };
 async function init() {
+  document.getElementById("grantSites").hidden = await api.permissions.contains(siteAccess);
   const [tab] = await api.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url || !/^https?:\/\//i.test(tab.url)) {
     status.textContent = t("openSite");
@@ -231,6 +253,11 @@ async function init() {
   }
   await inspect(tab);
 }
+document.getElementById("grantSites").onclick = async () => {
+  try {
+    if (await api.permissions.request(siteAccess)) await init();
+  } catch { status.textContent = t("permission"); }
+};
 void init().catch(() => { status.textContent = t("inspectionFailed"); });
 
 async function initSharing() {
@@ -238,6 +265,9 @@ async function initSharing() {
   const { videoTransfer } = await api.storage.local.get("videoTransfer");
   share.setAttribute("aria-pressed", String(videoTransfer === true && (!sharing || await api.permissions.contains(sharing))));
   document.getElementById("connection").hidden = false;
+  const appStatus = document.getElementById("appStatus");
+  const connection = await api.runtime.sendNativeMessage("local.media.downloader", { ping: true }).catch(() => null);
+  appStatus.textContent = t(connection?.ok ? "appConnected" : "appDisconnected");
   share.addEventListener("click", async () => {
     const enabled = share.getAttribute("aria-pressed") === "true";
     share.disabled = true;

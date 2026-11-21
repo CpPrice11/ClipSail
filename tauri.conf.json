@@ -1,6 +1,6 @@
 {
   "productName": "LoadSail",
-  "version": "0.1.71",
+  "version": "0.1.72",
   "identifier": "local.media.downloader",
   "build": {
     "frontendDist": "ui"

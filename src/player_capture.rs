@@ -19,7 +19,7 @@ use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use crate::{
     App,
-    discovery::{self, AppResult, Kind, Media},
+    discovery::{self, AppResult, Kind, Media, Quality},
 };
 
 #[derive(Default)]
@@ -134,17 +134,43 @@ pub async fn start_player_capture(
                             let format = mime.as_deref().and_then(|mime| {
                                 discovery::stream_mime(mime.split(';').next()?.trim())
                             });
-                            let Some(stream) = discovery::stream_id(&url, format) else {
-                                return Ok(());
-                            };
+                            let stream = discovery::stream_id(&url, format);
                             let mut method = PWSTR::null();
                             request.Method(&mut method)?;
                             if CoTaskMemPWSTR::from(method).to_string() != "GET" {
                                 return Ok(());
                             }
+                            let headers = request.Headers()?;
+                            let quality = if let Some(stream) = stream {
+                                discovery::stream_quality(&url, stream, None)
+                            } else {
+                                // Fetches made by streaming players can be individual segments.
+                                // A direct file comes from the browser's media element request.
+                                let mut destination = PWSTR::null();
+                                if headers
+                                    .GetHeader(w!("Sec-Fetch-Dest"), &mut destination)
+                                    .is_err()
+                                    || CoTaskMemPWSTR::from(destination).to_string() != "video"
+                                {
+                                    return Ok(());
+                                }
+                                let Some((extension, Kind::Video)) =
+                                    discovery::resource_format(&url, mime.as_deref().unwrap_or(""))
+                                else {
+                                    return Ok(());
+                                };
+                                Quality {
+                                    url: Some(url.to_string()),
+                                    source_origin: None,
+                                    format_id: None,
+                                    extension: extension.to_owned(),
+                                    width: None,
+                                    height: None,
+                                    size: None,
+                                }
+                            };
                             let mut referer = PWSTR::null();
-                            let source_origin = request
-                                .Headers()?
+                            let source_origin = headers
                                 .GetHeader(w!("Referer"), &mut referer)
                                 .ok()
                                 .and_then(|()| {
@@ -176,7 +202,7 @@ pub async fn start_player_capture(
                                 preview: None,
                                 preview_only: false,
                                 page_asset: false,
-                                qualities: vec![discovery::stream_quality(&url, stream, None)],
+                                qualities: vec![quality],
                             });
                             Ok(())
                         },

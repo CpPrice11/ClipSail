@@ -1518,10 +1518,13 @@ function durationText(value) {
   const seconds = String(total % 60).padStart(2, "0");
   return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
 }
+const videoFileExtension = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
+
 function mediaExtension(item) {
   return item.extension ?? item.qualities?.find(quality => quality.url === item.url)?.extension
     ?? [new URL(item.url).pathname.replace(/\/+$/, ""), item.name]
-    .map(value => value.match(/\.(mp4|m4v|webm|jpe?g|png|gif|svg|ico|webp|avif|mp3|m4a|wav|ogg|oga)$/i)?.[1])
+    .map(value => value.match(videoFileExtension)?.[1]
+      ?? value.match(/\.(jpe?g|png|gif|svg|ico|webp|avif|mp3|m4a|wav|ogg|oga)$/i)?.[1])
     .find(Boolean);
 }
 
@@ -2167,7 +2170,7 @@ async function readQueueFiles() {
 function queueMediaKind(job) {
   if (job.format_id) return "video";
   const name = job.file || job.name;
-  if (/\.(mp4|webm|m4v|mkv|mov|avi)$/i.test(name)) return "video";
+  if (videoFileExtension.test(name)) return "video";
   if (/\.(jpg|jpeg|png|webp|avif|bmp|heic|heif|tiff?)$/i.test(name)) return "image";
   if (/\.gif$/i.test(name)) return "gif";
   if (/\.(mp3|m4a|wav|ogg|oga|flac|opus|aac)$/i.test(name)) return "audio";

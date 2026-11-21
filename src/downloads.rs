@@ -297,7 +297,7 @@ fn media_download_name(
 ) -> AppResult<(String, &'static str)> {
     let (extension, kind) = discovery::response_format(response).ok_or("unsupported")?;
     let name = if is_youtube {
-        if (extension, kind) != ("mp4", Kind::Video) {
+        if !matches!((extension, kind), ("mp4" | "m4v", Kind::Video)) {
             return Err("unsupported");
         }
         let name = if job.browser_origin.is_some() {
@@ -305,7 +305,7 @@ fn media_download_name(
         } else {
             &job.name
         };
-        discovery::safe_media_name(name, extension)
+        discovery::safe_media_name(name, "mp4")
     } else if is_extracted {
         if kind != Kind::Video {
             return Err("unsupported");

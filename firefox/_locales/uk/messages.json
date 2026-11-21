@@ -1,4 +1,8 @@
 {
+  "hideVideoButton": { "message": "Сховати кнопку завантаження для цього відео" },
+  "grantSites": { "message": "Дозволити доступ до всіх сайтів" },
+  "appConnected": { "message": "LoadSail підключено." },
+  "appDisconnected": { "message": "Відкрий оновлений LoadSail, щоб підключити Firefox." },
   "downloadOptions": {
     "message": "Параметри завантаження відео"
   },

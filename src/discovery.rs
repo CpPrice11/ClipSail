@@ -181,7 +181,11 @@ fn mime_format(mime: &str) -> Option<(&'static str, Kind)> {
         "image/webp" => ("webp", Kind::Image),
         "image/avif" => ("avif", Kind::Image),
         "video/mp4" => ("mp4", Kind::Video),
+        "video/quicktime" => ("mov", Kind::Video),
+        "video/x-m4v" => ("m4v", Kind::Video),
         "video/webm" => ("webm", Kind::Video),
+        "video/x-matroska" | "video/matroska" => ("mkv", Kind::Video),
+        "video/x-msvideo" | "video/avi" | "video/msvideo" => ("avi", Kind::Video),
         "audio/mpeg" => ("mp3", Kind::Audio),
         "audio/mp4" | "audio/x-m4a" => ("m4a", Kind::Audio),
         "audio/wav" | "audio/x-wav" => ("wav", Kind::Audio),
@@ -193,6 +197,12 @@ fn mime_format(mime: &str) -> Option<(&'static str, Kind)> {
 
 pub(crate) fn path_format(url: &Url) -> Option<(&'static str, Kind)> {
     file_format(url.path().trim_end_matches('/'))
+}
+
+pub(crate) fn video_extension(extension: &str) -> Option<&'static str> {
+    ["mp4", "mov", "m4v", "webm", "mkv", "avi"]
+        .into_iter()
+        .find(|known| known.eq_ignore_ascii_case(extension))
 }
 
 fn same_media_address(address: &Url, variant: &Url) -> bool {
@@ -213,20 +223,23 @@ pub fn file_format(name: &str) -> Option<(&'static str, Kind)> {
             "ico" => ("ico", Kind::Image),
             "webp" => ("webp", Kind::Image),
             "avif" => ("avif", Kind::Image),
-            "mp4" | "m4v" => ("mp4", Kind::Video),
-            "webm" => ("webm", Kind::Video),
             "mp3" => ("mp3", Kind::Audio),
             "m4a" => ("m4a", Kind::Audio),
             "wav" => ("wav", Kind::Audio),
             "ogg" | "oga" => ("ogg", Kind::Audio),
-            _ => return None,
+            extension => (video_extension(extension)?, Kind::Video),
         },
     )
 }
 
 pub fn response_format(response: &Response) -> Option<(&'static str, Kind)> {
-    match mime(response.headers()).to_ascii_lowercase().as_str() {
-        "" | "application/octet-stream" | "binary/octet-stream" => path_format(response.url()),
+    resource_format(response.url(), mime(response.headers()))
+}
+
+pub(crate) fn resource_format(url: &Url, mime: &str) -> Option<(&'static str, Kind)> {
+    match mime.split(';').next()?.trim().to_ascii_lowercase().as_str() {
+        "" | "application/octet-stream" | "binary/octet-stream" => path_format(url),
+        "video/mp4" if path_format(url) == Some(("m4v", Kind::Video)) => Some(("m4v", Kind::Video)),
         value => mime_format(value),
     }
 }
@@ -676,6 +689,12 @@ impl TokenSink for Html {
                 self.record_post();
             }
         }
+        let declared_format = attr("type").and_then(|value| {
+            let value = value.split(';').next()?.trim();
+            stream_mime(value)
+                .map(|ext| (ext, Kind::Video))
+                .or_else(|| mime_format(value))
+        });
         let push_sized = |link: &str,
                           hint: Option<Kind>,
                           poster: Option<String>,
@@ -686,10 +705,12 @@ impl TokenSink for Html {
                 return;
             }
             if hint.is_none()
+                && declared_format.is_none()
                 && !link
                     .split(['?', '#'])
                     .next()
                     .unwrap_or("")
+                    .trim_end_matches('/')
                     .rsplit('/')
                     .next()
                     .unwrap_or("")
@@ -709,11 +730,7 @@ impl TokenSink for Html {
                             .map(|value| value.chars().take(120).collect())
                     })
                     .flatten(),
-                format: attr("type").and_then(|value| {
-                    stream_mime(value)
-                        .map(|ext| (ext, Kind::Video))
-                        .or_else(|| mime_format(value))
-                }),
+                format: declared_format,
                 hint,
                 width,
                 height,
@@ -827,10 +844,7 @@ impl TokenSink for Html {
             }
             "a" => {
                 if let Some(link) = attr("href") {
-                    let hint = attr("type")
-                        .and_then(mime_format)
-                        .filter(image_format)
-                        .map(|(_, kind)| kind);
+                    let hint = declared_format.filter(image_format).map(|(_, kind)| kind);
                     push(link, hint, None, false);
                 }
             }
@@ -946,7 +960,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
                 (item.meta_video
                     && !embedded.contains(&address)
                     && allowed(&address)
-                    && path_format(&address) == Some(("mp4", Kind::Video)))
+                    && matches!(path_format(&address), Some(("mp4" | "m4v", Kind::Video))))
                 .then_some(address)
             });
             let address = direct.next()?;
@@ -1021,6 +1035,15 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             ("mp4", Kind::Video)
         } else {
             item.format
+                .map(|format| {
+                    if format == ("mp4", Kind::Video)
+                        && path_format(&url) == Some(("m4v", Kind::Video))
+                    {
+                        ("m4v", Kind::Video)
+                    } else {
+                        format
+                    }
+                })
                 .or_else(|| path_format(&url))
                 .map(|(ext, kind)| {
                     if kind == Kind::Gif {
@@ -1078,7 +1101,9 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
             .flatten();
         let group = item
             .video_group
-            .filter(|_| kind == Kind::Video && !preview_only && matches!(extension, "mp4" | "webm"))
+            .filter(|_| {
+                kind == Kind::Video && !preview_only && video_extension(extension).is_some()
+            })
             .map(|id| {
                 (
                     id,

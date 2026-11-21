@@ -1,4 +1,8 @@
 {
+  "hideVideoButton": { "message": "Скрыть кнопку загрузки для этого видео" },
+  "grantSites": { "message": "Разрешить доступ ко всем сайтам" },
+  "appConnected": { "message": "LoadSail подключён." },
+  "appDisconnected": { "message": "Открой обновлённый LoadSail, чтобы подключить Firefox." },
   "downloadOptions": {
     "message": "Варианты загрузки видео"
   },

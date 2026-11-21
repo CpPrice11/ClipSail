@@ -12,6 +12,7 @@ mod yt_dlp;
 use std::{
     fs,
     io::{self, Read, Write},
+    path::PathBuf,
 };
 
 use firefox::{
@@ -27,6 +28,12 @@ const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x01000000;
 #[serde(deny_unknown_fields)]
 struct QualityRequest {
     youtube_qualities: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConnectionCheck {
+    ping: bool,
 }
 
 fn video_qualities(request: QualityRequest) -> discovery::AppResult<Vec<discovery::Quality>> {
@@ -87,17 +94,21 @@ fn save(report: &Report) -> Option<()> {
     Some(())
 }
 
+fn app_executable() -> Option<PathBuf> {
+    let folder = paths::app_folder()?;
+    ["LoadSail.exe", "ClipSail.exe", "media-downloader.exe"]
+        .into_iter()
+        .map(|name| folder.join(name))
+        .find(|path| path.is_file())
+}
+
 fn accept_video(video: &VideoRequest) -> Option<()> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::process::CommandExt;
     video.validate()?;
     let dir = firefox::incoming_directory()?;
     let app_data = dir.parent()?.parent()?;
-    let folder = paths::app_folder()?;
-    let app = ["LoadSail.exe", "ClipSail.exe", "media-downloader.exe"]
-        .into_iter()
-        .map(|name| folder.join(name))
-        .find(|path| path.is_file())?;
+    let app = app_executable()?;
     fs::create_dir_all(&dir).ok()?;
     // Serialize submissions while checking the pending limit and starting the app.
     let _submission = (0..20).find_map(|_| {
@@ -179,7 +190,9 @@ fn main() -> io::Result<()> {
     }
     let response = match read_payload(&mut io::stdin().lock()) {
         Some(payload) => {
-            if let Ok(request) = serde_json::from_slice::<QualityRequest>(&payload) {
+            if let Ok(check) = serde_json::from_slice::<ConnectionCheck>(&payload) {
+                serde_json::json!({ "ok": check.ping && app_executable().is_some() })
+            } else if let Ok(request) = serde_json::from_slice::<QualityRequest>(&payload) {
                 match video_qualities(request) {
                     Ok(qualities) => serde_json::json!({ "ok": true, "qualities": qualities }),
                     Err(error) => serde_json::json!({ "ok": false, "error": error }),

@@ -125,7 +125,8 @@ impl Format {
         let ext = self.ext.as_deref()?;
         let (transfer, address) = match self.protocol.as_deref()? {
             "https" | "http"
-                if matches!(ext, "mp4" | "webm") && self.acodec.as_deref() != Some("none") =>
+                if discovery::video_extension(ext).is_some()
+                    && self.acodec.as_deref() != Some("none") =>
             {
                 (Transfer::File, self.url.as_deref()?)
             }

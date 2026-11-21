@@ -5,19 +5,25 @@
 
   const encrypted = new WeakSet();
   const buttons = new Map();
+  const dismissedButtons = new WeakMap();
   const pending = new WeakSet();
   const ids = new WeakMap();
+  const observedVideos = new Map();
   let nextId = 0;
   const t = key => api.i18n.getMessage(key);
   const protectedMedia = media => media.mediaKeys || encrypted.has(media);
+  const unsupportedVideo = media => media instanceof HTMLVideoElement
+    && (media.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED
+      || (!media.error && media.networkState === HTMLMediaElement.NETWORK_NO_SOURCE));
   const declaredSource = media => media.getAttribute("src") || media.getAttribute("data-src");
   const mediaPath = url => url.pathname.replace(/\/+$/, "");
   const imagePattern = /\.(?:jpe?g|png|webp|gif|avif)$/i;
   const audioPattern = /\.(?:mp3|m4a|ogg|oga|wav)$/i;
-  const videoPattern = /\.(?:mp4|webm)$/i;
+  const videoPattern = /\.(?:mp4|mov|m4v|webm|mkv|avi)$/i;
   const decorative = /(?:^|[\s/_-])(?:avatar|emoji|favicon|icon|logo|spinner|sprite|badge|placeholder|tracking|pixel|banner|advert)(?:[\s/_.-]|$)/i;
   let hideHere = false;
   let settings = {};
+  let youtubeQualityRequest;
 
   function youtubeLink() {
     const page = new URL(location.href);
@@ -36,7 +42,8 @@
     if (!value || value.length > 8192) return null;
     try {
       const url = new URL(value, document.baseURI);
-      if (!/^https?:$/.test(url.protocol) || url.username || url.password || !pattern.test(mediaPath(url))) return null;
+      if (!/^https?:$/.test(url.protocol) || url.username || url.password
+          || (pattern && !pattern.test(mediaPath(url)))) return null;
       url.hash = "";
       return url;
     } catch {
@@ -51,12 +58,14 @@
           || decorative.test([url.pathname, media.id, media.className, media.alt].join(" "))) return [];
       return [{ url, height: 0 }];
     }
-    if (media.error || protectedMedia(media)) return [];
+    if ((media.error && !unsupportedVideo(media)) || protectedMedia(media)) return [];
     const isVideo = media instanceof HTMLVideoElement;
     const pattern = isVideo ? videoPattern : audioPattern;
     const sources = [...media.querySelectorAll(":scope > source[src], :scope > source[data-src]")].slice(0, 24);
     const candidate = media.currentSrc || declaredSource(media);
-    const current = candidate ? address(candidate, pattern)
+    const observed = isVideo && address(media.currentSrc);
+    const observedExtension = observed && observedVideos.get(observed.href);
+    const current = candidate ? address(candidate, pattern) || (observedExtension && observed)
       : sources.map(source => address(declaredSource(source), pattern)).find(Boolean);
     if (!current) return [];
     if (!isVideo) return [{ url: current, height: 0 }];
@@ -73,11 +82,13 @@
       const url = address(declaredSource(source), pattern);
       if (!url) continue;
       const height = resolution(source, url);
-      if (height || url.href === current.href) options.set(url.href, { url, height });
+      if (height || url.href === current.href) options.set(url.href, { url, height, ext: mediaPath(url).split(".").pop() });
     }
     const currentHeight = options.get(current.href)?.height || resolution(media, current)
       || Math.min(media.videoWidth, media.videoHeight);
-    options.set(current.href, { url: current, height: currentHeight });
+    const pathExtension = videoPattern.test(mediaPath(current)) ? mediaPath(current).split(".").pop() : null;
+    options.set(current.href, { url: current, height: currentHeight,
+      ext: pathExtension ?? observedExtension, videoFile: pathExtension ? undefined : observedExtension });
     return [...options.values()].sort((a, b) => b.height - a.height);
   }
 
@@ -86,7 +97,18 @@
     const url = youtubeSource(video);
     if (!url) return { error: "sourceChanged" };
     try {
-      const result = await api.runtime.sendMessage({ type: "videoQualities", url });
+      if (youtubeQualityRequest?.url !== url) {
+        const request = { url, ready: false };
+        request.promise = api.runtime.sendMessage({ type: "videoQualities", url })
+          .catch(() => ({ error: "downloadFailed" }))
+          .then(result => {
+            request.ready = Boolean(result?.qualities?.length);
+            if (!request.ready && youtubeQualityRequest === request) youtubeQualityRequest = undefined;
+            return result;
+          });
+        youtubeQualityRequest = request;
+      }
+      const result = await youtubeQualityRequest.promise;
       return youtubeSource(video) === url ? { ...result, url } : { error: "sourceChanged" };
     } catch {
       return { error: "downloadFailed" };
@@ -100,15 +122,15 @@
     const youtube = !variant && !option && youtubeSource(video);
     if (selection && (!youtube || selection.url !== youtube)) return { error: "sourceChanged" };
     if (!option && !youtube) return { error: variant ? "sourceChanged" : "unsupportedVideo" };
-    // Let the browser inspect the actual media before offering to save an unloaded stream.
-    if (!youtube && video instanceof HTMLMediaElement && !video.error
+    // A known direct video file can still be saved when Firefox cannot decode it.
+    if (!youtube && video instanceof HTMLMediaElement && !unsupportedVideo(video)
         && video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return { error: "playFirst" };
     if (pending.has(video)) return { error: "sourceChanged" };
     pending.add(video);
     try {
       return await api.runtime.sendMessage({
         type: "saveVideo", url: youtube || option.url.href, quality: option?.height ?? 0, title: video instanceof HTMLVideoElement ? document.title : "",
-        formatId: selection?.formatId
+        formatId: selection?.formatId, videoFile: option?.videoFile
       });
     } catch {
       return { error: "downloadFailed" };
@@ -118,33 +140,41 @@
   }
 
   function renderButton(video) {
-    const direct = variants(video).length > 0;
-    const youtube = !direct && Boolean(youtubeSource(video));
-    const mode = direct ? "direct" : youtube ? "youtube" : "unavailable";
+    const source = youtubeLink() || declaredSource(video) || video.currentSrc;
     if (hideHere || settings.off || settings.sites?.[location.hostname] === true || document.fullscreenElement
-        || !video.isConnected || video.getClientRects().length === 0) {
-      buttons.get(video)?.remove();
+        || dismissedButtons.get(video) === source || !video.isConnected || video.getClientRects().length === 0) {
+      buttons.get(video)?.host.remove();
       buttons.delete(video);
       return;
     }
+    const options = variants(video);
+    const direct = options.length > 0;
+    const youtube = !direct && youtubeSource(video);
+    const mode = direct ? "direct" : youtube ? "youtube" : "unavailable";
     const old = buttons.get(video);
     const label = "downloadThisVideo";
-    if (old?.isConnected && old.dataset.mode === mode) return;
-    old?.remove();
+    if (old?.host.isConnected && old.host.dataset.mode === mode && old.source === source) {
+      old.options = options;
+      return;
+    }
+    old?.host.remove();
     const host = document.createElement("span");
     host.dataset.action = label;
     host.dataset.direct = String(direct);
     host.dataset.mode = mode;
+    const entry = { host, source, options };
     const shadow = host.attachShadow({ mode: "closed" });
     const button = document.createElement("button");
+    const dismiss = document.createElement("button");
     const status = document.createElement("span");
     const menu = document.createElement("div");
     const style = document.createElement("style");
     style.textContent = `
-      :host { position: fixed; max-width: calc(100vw - 16px); z-index: 2147483646; font: 14px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #fafafa; }
+      :host { position: fixed; display: flex; align-items: flex-start; gap: 4px; max-width: calc(100vw - 16px); z-index: 2147483646; font: 14px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #fafafa; }
       button { font: inherit; min-height: 32px; padding: 4px 10px; border-radius: 4px; border: 1px solid #454545; background: #333; color: #fafafa; cursor: pointer; }
       button:hover:not(:disabled) { background: #454545; }
       .download-trigger { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; }
+      .download-dismiss { display: grid; place-items: center; width: 28px; min-height: 28px; padding: 0; font-size: 18px; line-height: 1; }
       .download-trigger[aria-expanded="true"] { color: #dc81d6; border-color: #dc81d6; }
       button:disabled { cursor: wait; opacity: .7; }
       div[hidden], span:empty { display: none; }
@@ -158,6 +188,11 @@
     button.className = "download-trigger";
     button.title = t(label);
     button.setAttribute("aria-label", button.title);
+    dismiss.type = "button";
+    dismiss.className = "download-dismiss";
+    dismiss.textContent = "×";
+    dismiss.title = t("hideVideoButton");
+    dismiss.setAttribute("aria-label", dismiss.title);
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("width", "20");
@@ -188,6 +223,14 @@
       menu.hidden = true;
       button.setAttribute("aria-expanded", "false");
     };
+    dismiss.onclick = event => {
+      if (!event.isTrusted) return;
+      closeMenu();
+      dismissedButtons.set(video, source);
+      buttons.delete(video);
+      host.remove();
+      video.focus({ preventScroll: true });
+    };
     if (direct || youtube) {
       button.setAttribute("aria-expanded", "false");
       button.setAttribute("aria-controls", menu.id);
@@ -211,13 +254,14 @@
       }
       if (!menu.hidden) { closeMenu(); return; }
       choices.replaceChildren();
-      menuStatus.textContent = youtube ? t("checkingQualities") : "";
+      const hadQualities = youtubeQualityRequest?.url === youtube && youtubeQualityRequest.ready;
+      menuStatus.textContent = youtube && !hadQualities ? t("checkingQualities") : "";
       menu.hidden = false;
       button.setAttribute("aria-expanded", "true");
       const version = ++menuVersion;
       const result = youtube ? await youtubeQualities(video) : {
-        qualities: variants(video).map(({ url, height }) => ({
-          height, extension: mediaPath(url).split(".").pop(), format_id: url.href
+        qualities: entry.options.map(({ url, height, ext }) => ({
+          height, extension: ext, format_id: url.href
         }))
       };
       if (menuVersion !== version || !host.isConnected) return;
@@ -249,13 +293,13 @@
       }
       if (shadow.activeElement === button || !shadow.activeElement) choices.firstElementChild?.focus();
     };
-    shadow.append(style, button, menu, status);
+    shadow.append(style, button, dismiss, menu, status);
     document.documentElement.append(host);
-    buttons.set(video, host);
+    buttons.set(video, entry);
   }
 
   function refresh() {
-    for (const [video, host] of buttons) {
+    for (const [video, { host }] of buttons) {
       if (!video.isConnected) {
         host.remove();
         buttons.delete(video);
@@ -263,7 +307,7 @@
     }
     for (const video of document.querySelectorAll("video")) {
       renderButton(video);
-      const host = buttons.get(video);
+      const host = buttons.get(video)?.host;
       if (!host) continue;
       const rect = video.getBoundingClientRect();
       const hidden = rect.width === 0 || rect.height === 0 || getComputedStyle(video).visibility !== "visible"
@@ -299,7 +343,16 @@
     attributeFilter: ["src", "data-src", "srcset", "hidden", "width", "height", "class"] });
   schedule();
 
-  api.runtime.onMessage.addListener((message, _sender, reply) => {
+  api.runtime.onMessage.addListener((message, sender, reply) => {
+    if (message.type === "videoResponse" && sender.id === api.runtime.id) {
+      const url = address(message.url);
+      if (url) {
+        if (observedVideos.size >= 64) observedVideos.delete(observedVideos.keys().next().value);
+        observedVideos.set(url.href, message.extension);
+        schedule();
+      }
+      return;
+    }
     if (message.type === "inspect") {
       const mediaElements = [...document.querySelectorAll("video, audio, img")].slice(0, 1000);
       const items = mediaElements.flatMap(media => {
@@ -314,7 +367,7 @@
           dimensions: media instanceof HTMLImageElement ? [media.naturalWidth, media.naturalHeight]
             : media instanceof HTMLVideoElement ? [media.videoWidth, media.videoHeight] : [],
           duration: Number.isFinite(media.duration) ? media.duration : null,
-          variants: options.map(({ url, height }) => ({ value: url.href, height, ext: mediaPath(url).split(".").pop() }))
+          variants: options.map(({ url, height, ext }) => ({ value: url.href, height, ext: ext ?? mediaPath(url).split(".").pop() }))
         }];
       }).slice(0, 60);
       const youtubePlayer = mediaElements.find(media => media instanceof HTMLVideoElement

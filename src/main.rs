@@ -141,6 +141,8 @@ struct Snapshot {
     error: Option<&'static str>,
 }
 
+const FIREFOX_HOST_KEY: &str = r"Software\Mozilla\NativeMessagingHosts\local.media.downloader";
+
 #[tauri::command]
 fn connect_firefox(chrome: Option<bool>) -> AppResult<()> {
     let current = std::env::current_exe().map_err(|_| "firefoxConnectError")?;
@@ -168,7 +170,7 @@ fn connect_firefox(chrome: Option<bool>) -> AppResult<()> {
     } else {
         (
             "native-host.json",
-            r"Software\Mozilla\NativeMessagingHosts\local.media.downloader",
+            FIREFOX_HOST_KEY,
             "allowed_extensions",
             firefox::ADDON_ID,
         )
@@ -189,6 +191,37 @@ fn connect_firefox(chrome: Option<bool>) -> AppResult<()> {
     entry
         .set_value("", &manifest.as_os_str())
         .map_err(|_| "firefoxConnectError")
+}
+
+#[cfg(not(debug_assertions))]
+fn connect_default_firefox() {
+    let Some(dir) = firefox::directory() else {
+        return;
+    };
+    let manifest = dir.join("native-host.json");
+    let registry = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
+    let existing = registry
+        .open_subkey(FIREFOX_HOST_KEY)
+        .and_then(|entry| entry.get_value::<std::ffi::OsString, _>(""))
+        .ok()
+        .map(PathBuf::from);
+    // Retain another working installation selected by the user.
+    if existing
+        .as_ref()
+        .filter(|path| **path != manifest)
+        .is_some_and(|path| {
+            fs::metadata(path)
+                .is_ok_and(|meta| meta.is_file() && meta.len() <= firefox::MAX_BYTES as u64)
+                && fs::read(path)
+                    .ok()
+                    .and_then(|body| serde_json::from_slice::<serde_json::Value>(&body).ok())
+                    .and_then(|info| info.get("path")?.as_str().map(PathBuf::from))
+                    .is_some_and(|host| host.is_absolute() && host.is_file())
+        })
+    {
+        return;
+    }
+    let _ = connect_firefox(Some(false));
 }
 
 #[tauri::command]
@@ -637,13 +670,7 @@ fn pending_browser_videos() -> Vec<(std::time::SystemTime, Uuid)> {
 
 fn browser_video_name(video: &firefox::VideoRequest) -> String {
     let url = video.validate().expect("validated browser video");
-    let extension = if firefox::is_youtube_video(&url) {
-        "mp4"
-    } else {
-        discovery::path_format(&url)
-            .expect("validated video format")
-            .0
-    };
+    let extension = video.extension(&url).expect("validated video format");
     if video.title.trim().is_empty() {
         discovery::media_name(&url, extension)
     } else {
@@ -666,11 +693,7 @@ fn next_browser_video(handle: AppHandle, state: State<'_, Arc<App>>) -> Option<I
         }
         let url = video.validate()?;
         let can_check_qualities = firefox::is_youtube_video(&url);
-        let extension = if can_check_qualities {
-            "mp4"
-        } else {
-            discovery::path_format(&url)?.0
-        };
+        let extension = video.extension(&url)?;
         let name = browser_video_name(&video);
         if let Some(window) = handle.get_webview_window("main") {
             let _ = window.show();
@@ -1219,19 +1242,14 @@ fn main() {
                     app.manage(player_capture::PlayerCapture::default());
                     playback::install(app.handle());
                     install_tray(app.handle())?;
-                    // Update an existing browser registration when Pullora launches a new version folder.
                     #[cfg(not(debug_assertions))]
-                    if state.portable_root.is_none()
-                        && !browser_launch
-                        && let Some(dir) = firefox::directory()
-                    {
-                        for (chrome, name) in [
-                            (false, "native-host.json"),
-                            (true, "chrome-native-host.json"),
-                        ] {
-                            if dir.join(name).is_file() {
-                                let _ = connect_firefox(Some(chrome));
-                            }
+                    if !browser_launch {
+                        connect_default_firefox();
+                        if state.portable_root.is_none()
+                            && firefox::directory()
+                                .is_some_and(|dir| dir.join("chrome-native-host.json").is_file())
+                        {
+                            let _ = connect_firefox(Some(true));
                         }
                     }
                     let handle = app.handle().clone();
