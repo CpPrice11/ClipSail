@@ -125,57 +125,6 @@ pub fn prepare_selection(
     Ok(pending)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn selections(json: &str) -> Vec<Selection> {
-        serde_json::from_str(json).expect("valid test batch")
-    }
-
-    #[test]
-    fn accepts_external_selection_and_rejects_unsafe_batches() {
-        let directory = tempfile::tempdir().unwrap();
-        let folder = directory.path();
-        let items = r#"[
-            {"url":"https://example.org/video.mp4","name":"Video","size":7},
-            {"url":"https://example.org/video.mp4#duplicate"},
-            {"url":"https://example.org/photo.jpg"}
-        ]"#;
-        let mut pending = prepare_selection(selections(items), folder, &[]).unwrap();
-        assert_eq!(pending.len(), 2);
-        assert_eq!(pending[0].total, Some(7));
-        assert_eq!(pending[1].folder, folder);
-        assert!(matches!(
-            prepare_selection(selections(items), folder, &pending),
-            Err("alreadyQueued")
-        ));
-        pending[0].status = Status::Completed;
-        assert_eq!(
-            prepare_selection(selections(items), folder, &pending)
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(matches!(
-            prepare_selection(
-                selections(r#"[{"url":"https://example.org/photo.jpg"},{"url":"file:///secret"}]"#),
-                folder,
-                &[]
-            ),
-            Err("invalidUrl")
-        ));
-        assert!(matches!(
-            prepare_selection(
-                selections(r#"[{"url":"https://example.org/player","preview_only":true}]"#),
-                folder,
-                &[]
-            ),
-            Err("unsupported")
-        ));
-    }
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: Uuid,

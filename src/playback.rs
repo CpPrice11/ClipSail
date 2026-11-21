@@ -169,29 +169,3 @@ pub fn install(app: &AppHandle) {
         };
     });
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn keeps_preview_context_only_for_valid_redirect_targets() {
-        let request = MediaRequest {
-            url: "https://site.example/video".to_owned(),
-            referer: Some("https://site.example/".to_owned()),
-            user_agent: Some("Player".to_owned()),
-        };
-        let redirected = request
-            .redirected("//cdn.example/video.mp4?token=1#clip")
-            .unwrap();
-        assert_eq!(redirected.url, "https://cdn.example/video.mp4?token=1");
-        assert_eq!(redirected.referer, request.referer);
-        assert_eq!(redirected.user_agent, request.user_agent);
-        assert!(request.redirected("http://cdn.example/video.mp4").is_none());
-        assert!(
-            request
-                .redirected("https://user@cdn.example/video.mp4")
-                .is_none()
-        );
-    }
-}

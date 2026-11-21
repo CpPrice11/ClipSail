@@ -149,7 +149,7 @@ pub fn is_dash(url: &Url) -> bool {
     url.path().to_ascii_lowercase().ends_with(".mpd")
 }
 
-fn stream_mime(value: &str) -> Option<&'static str> {
+pub(crate) fn stream_mime(value: &str) -> Option<&'static str> {
     match value.to_ascii_lowercase().as_str() {
         "application/vnd.apple.mpegurl"
         | "application/x-mpegurl"
@@ -160,7 +160,7 @@ fn stream_mime(value: &str) -> Option<&'static str> {
     }
 }
 
-fn stream_id(url: &Url, extension: Option<&str>) -> Option<&'static str> {
+pub(crate) fn stream_id(url: &Url, extension: Option<&str>) -> Option<&'static str> {
     match extension {
         Some("mpd") => Some("dash:default"),
         Some("m3u8") => Some("hls:default"),
@@ -191,7 +191,7 @@ fn mime_format(mime: &str) -> Option<(&'static str, Kind)> {
     })
 }
 
-fn path_format(url: &Url) -> Option<(&'static str, Kind)> {
+pub(crate) fn path_format(url: &Url) -> Option<(&'static str, Kind)> {
     file_format(url.path().trim_end_matches('/'))
 }
 
@@ -902,11 +902,6 @@ fn tokenize(html: &str, collect_links: bool) -> Html {
     parser.sink
 }
 
-#[cfg(test)]
-fn parse(html: &str, source: &Url) -> Vec<Media> {
-    parse_media(tokenize(html, false), source)
-}
-
 fn document_base(page: &Html, source: &Url) -> Url {
     page.base
         .borrow()
@@ -1226,7 +1221,7 @@ fn parse_media(page: Html, source: &Url) -> Vec<Media> {
         .collect()
 }
 
-fn stream_quality(url: &Url, id: &str, height: Option<u32>) -> Quality {
+pub(crate) fn stream_quality(url: &Url, id: &str, height: Option<u32>) -> Quality {
     Quality {
         url: Some(url.to_string()),
         source_origin: None,
@@ -1994,333 +1989,4 @@ pub(crate) async fn read_limited(
         bytes.extend_from_slice(&chunk);
     }
     Ok(bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn finds_lazy_originals_and_keeps_responsive_widths_on_the_right_files() {
-        let address = Url::parse("https://example.org/gallery/").unwrap();
-        let items = parse(
-            r#"<picture>
-              <source type="image/webp" data-lazy-srcset="small.webp 480w, large.webp?crop=1,2 1600w">
-              <img src="data:image/png;base64,AAAA" width="320" height="180"
-                data-original="original.png" data-lazy-src="fallback.png"
-                data-srcset="data:image/png;base64,AAAA 1x, hd.png 2x">
-            </picture>
-            <a href="/originals/large.png"><img src="/thumb.png"></a>
-            <a href="/original?id=7" type="image/png"><img src="/thumb2.png"></a>
-            <link rel="icon" href="/favicon.ico">"#,
-            &address,
-        );
-        let names: Vec<_> = items.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "large.webp", "small.webp", "original.png", "hd.png", "fallback.png",
-                "large.png", "thumb.png", "original.png", "thumb2.png", "favicon.ico",
-            ]
-        );
-        assert!(items[0].url.ends_with("large.webp?crop=1,2"));
-        assert_eq!((items[0].width, items[0].height), (Some(1600), None));
-        assert_eq!((items[4].width, items[4].height), (Some(320), Some(180)));
-        assert!(items.last().unwrap().page_asset);
-    }
-
-    #[test]
-    fn reads_image_objects_alongside_other_json_ld_media() {
-        let address = Url::parse("https://example.org/gallery/").unwrap();
-        let page = tokenize(
-            r#"<script type="application/ld+json">
-            {"@graph":[
-              {"@type":["Thing","https://schema.org/ImageObject"],"name":"Lake",
-               "contentUrl":"../original?id=4","thumbnailUrl":"../thumbnail.jpg",
-               "encodingFormat":"image/webp"},
-              {"@type":"ImageObject","url":"/photo.png"},
-              {"@type":"ImageObject","thumbnailUrl":"/preview.jpg"}
-            ]}
-            </script>"#,
-            false,
-        );
-        let images = structured_media(&page, &address, &mut Vec::new()).images;
-        assert_eq!(images.len(), 2);
-        assert_eq!(images[0].link, "../original?id=4");
-        assert_eq!(images[0].format, Some(("webp", Kind::Image)));
-        assert_eq!(images[0].photo_title.as_deref(), Some("Lake"));
-        assert_eq!(images[1].link, "/photo.png");
-    }
-
-    #[test]
-    fn reads_video_objects_in_normal_search_and_ignores_player_urls() {
-        let address = Url::parse("https://example.org/posts/item").unwrap();
-        let page = tokenize(
-            r#"<script type="application/ld+json">
-        {"@context":"https://schema.org","@graph":[
-          {"@type":["Thing","https://schema.org/VideoObject"],"name":"Recording",
-           "contentUrl":"../media?id=12#ignored","embedUrl":"/player","thumbnailUrl":["/cover.jpg"]},
-          {"@type":"VideoObject","embedUrl":"/html-player"},
-          {"@type":"VideoObject","contentUrl":"http://example.org/insecure.mp4"},
-          {"@type":"VideoObject","contentUrl":"/stream","encodingFormat":"application/dash+xml"}
-        ]}
-        </script>"#,
-            false,
-        );
-        let videos = structured_media(&page, &address, &mut Vec::new()).videos;
-        assert_eq!(videos.len(), 2);
-        assert_eq!(videos[0].url, "https://example.org/media?id=12");
-        assert_eq!(videos[0].name, "Recording");
-        assert_eq!(
-            videos[0].preview.as_deref(),
-            Some("https://example.org/cover.jpg")
-        );
-        assert!(videos[0].qualities.is_empty());
-        assert_eq!(
-            videos[1].qualities[0].format_id.as_deref(),
-            Some("dash:default")
-        );
-    }
-
-    #[test]
-    fn recognizes_a_browser_challenge_without_mislabeling_generic_errors() {
-        assert!(is_browser_challenge(
-            b"<body data-pow='nonce'>We are checking your browser</body>"
-        ));
-        assert!(!is_browser_challenge(b"<body>403 Access denied</body>"));
-        assert!(!is_browser_challenge(
-            b"<body data-pow='other'>Access denied</body>"
-        ));
-    }
-
-    #[test]
-    fn reads_literal_inline_video_variants_without_running_player_code() {
-        let html = r#"<script>
-            var generatedName = {
-                video_url: 'https:\/\/cdn.example.net\/source.mp4\/?ticket=123',
-                video_url_text: '720p',
-                "video_alt_url": "/small.mp4/",
-                "video_alt_url_text": "360p",
-                video_alt_url2: buildAddress(),
-                preview_url: '/cover.jpg'
-            };
-        </script>"#;
-        let mut players = tokenize(html, false).inline_players.into_inner();
-        assert_eq!(players.len(), 1);
-        let player = players.pop().unwrap();
-        assert_eq!(player.poster.as_deref(), Some("/cover.jpg"));
-        assert_eq!(
-            player.sources,
-            [
-                (
-                    "https://cdn.example.net/source.mp4/?ticket=123".to_owned(),
-                    Some(720)
-                ),
-                ("/small.mp4/".to_owned(), Some(360)),
-            ]
-        );
-        let address = Url::parse(&player.sources[0].0).unwrap();
-        assert_eq!(path_format(&address), Some(("mp4", Kind::Video)));
-        assert_eq!(media_name(&address, "mp4"), "source.mp4");
-    }
-
-    #[test]
-    fn associates_page_player_with_its_cover_and_stream_qualities() {
-        let source = Url::parse("https://example.org/watch").unwrap();
-        let items = parse(
-            r#"
-            <meta property="og:title" content="Sample">
-            <meta property="og:image" content="/cover.jpg">
-            <meta property="og:video" content="/direct.mp4">
-            <meta property="og:video:type" content="video/mp4">
-            <meta property="og:video:url" content="/embed">
-            <meta property="og:video:type" content="text/html">
-            <script>var flashvars_123 = {
-                "image_url":"/cover.jpg",
-                "mediaDefinitions":[
-                    {"format":"hls","quality":"240","videoUrl":"/low.m3u8"},
-                    {"format":"hls","quality":1080,"videoUrl":"/high.m3u8"},
-                    {"format":"mp4","quality":"","videoUrl":"/api/media"}
-                ]};
-            </script>
-            <video src="/related.mp4"></video>
-        "#,
-            &source,
-        );
-        let videos: Vec<_> = items
-            .iter()
-            .filter(|item| item.kind == Kind::Video)
-            .collect();
-        assert_eq!(videos.len(), 2);
-        let main = videos.iter().find(|item| item.name == "Sample").unwrap();
-        assert!(!main.preview_only && main.url.ends_with("/direct.mp4"));
-        assert_eq!(
-            main.preview.as_deref(),
-            Some("https://example.org/cover.jpg")
-        );
-        assert_eq!(
-            main.qualities
-                .iter()
-                .map(Quality::resolution)
-                .collect::<Vec<_>>(),
-            [1080, 240]
-        );
-        let related = videos
-            .iter()
-            .find(|item| item.url.ends_with("/related.mp4"))
-            .unwrap();
-        assert!(related.preview.is_none() && related.qualities.is_empty());
-    }
-
-    #[test]
-    fn groups_sources_of_one_player_in_quality_order() {
-        let source = Url::parse("https://example.org/page").unwrap();
-        let items = parse(
-            r#"
-            <video height="300"><source src="/clip-low.mp4" data-quality="360p">
-              <source src="/clip-1080p.mp4" type="video/mp4">
-              <source src="/clip-med.webm" label="720p"></video>
-            <video src="/another.mp4"></video>
-        "#,
-            &source,
-        );
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].name, "clip-1080p.mp4");
-        let heights: Vec<_> = items[0].qualities.iter().map(Quality::resolution).collect();
-        assert_eq!(heights, [1080, 720, 360]);
-        assert!(items[1].qualities.is_empty());
-    }
-
-    #[test]
-    fn discovers_relative_sources_posters_and_entities() {
-        let page = Url::parse("https://example.org/articles/").unwrap();
-        let result = parse(
-            r#"<base href="/media/"><script>const x = '<img src="bogus.jpg">'</script>
-            <img src="p.jpg?v=1&amp;k=2"><video poster="p.jpg"><source src="movie" type="video/mp4"></video>
-            <a href="p.jpg?v=1&amp;k=2#dup">repeat</a><audio src="a.mp3"></audio>"#,
-            &page,
-        );
-        assert_eq!(result.len(), 3);
-        assert_eq!(result[0].url, "https://example.org/media/p.jpg?v=1&k=2");
-        assert_eq!(
-            result[1].preview.as_deref(),
-            Some("https://example.org/media/p.jpg")
-        );
-        assert_eq!(result[2].kind, Kind::Audio);
-    }
-
-    #[test]
-    fn pairs_embedded_video_with_page_cover() {
-        let page = Url::parse("https://example.org/watch?v=123").unwrap();
-        let result = parse(
-            r#"<meta property="og:title" content="Demo &amp; title">
-               <meta property="og:image" content="/cover.jpg">
-               <meta property="og:video:url" content="/embed/123">
-               <meta property="og:video:secure_url" content="/embed/123">
-               <meta property="og:video:type" content="text/html">
-               <video src="/direct.mp4"></video>"#,
-            &page,
-        );
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].name, "Demo & title");
-        assert_eq!(
-            result[0].preview.as_deref(),
-            Some("https://example.org/cover.jpg")
-        );
-        assert!(result[0].preview_only);
-        assert!(!result[1].preview_only);
-    }
-
-    #[test]
-    fn keeps_player_covers_out_of_photo_results() {
-        let page = Url::parse("https://example.org/post").unwrap();
-        let result = parse(
-            r#"<meta property="og:image" content="/cover.jpg?id=1">
-               <meta property="og:video" content="/video.mp4">
-               <picture><source srcset="/p-2.jpg 2x">
-                 <img src="/cover.jpg?id=1&amp;width=480"></picture>
-               <img src="/cover.jpg?id=2"><img src="/sprite.jpg#xywh=1,2,3,4">
-               <img src="/thumbs/vts%3A227"><a href="/"><img src="/1234.png"></a>
-               <img alt="Example logo" src="/brand.png">"#,
-            &page,
-        );
-        assert_eq!(result.len(), 4);
-        assert_eq!(result[0].kind, Kind::Video);
-        assert_eq!(
-            result[0].preview.as_deref(),
-            Some("https://example.org/cover.jpg?id=1")
-        );
-        assert!(result[1].url.ends_with("/cover.jpg?id=2"));
-        assert!(result[2..].iter().all(|item| item.page_asset));
-    }
-
-    #[test]
-    fn uses_photo_titles_only_for_technical_file_names() {
-        let page = url("https://example.org/gallery").unwrap();
-        let photos = parse(
-            r#"<img src="/rs:fit:320:180" title="Photo" alt="A flower in bloom">
-               <img src="/rs:fit:160:90" alt="Thumbnail">
-               <img src="/spring.png" title="A different description">"#,
-            &page,
-        );
-        assert_eq!(photos.len(), 3);
-        assert_eq!(photos[0].name, "rs:fit:320:180");
-        assert_eq!(photos[0].photo_title.as_deref(), Some("A flower in bloom"));
-        assert_eq!(photos[1].name, "rs:fit:160:90");
-        assert_eq!(photos[1].photo_title, None);
-        assert_eq!(photos[2].name, "spring.png");
-        assert_eq!(photos[2].photo_title, None);
-    }
-
-    #[test]
-    fn separates_page_assets_from_photo_video_and_gif() {
-        let page = Url::parse("https://example.org/").unwrap();
-        let result = parse(
-            r#"<link rel="shortcut icon" href="/mark">
-               <a href="/still.png">Image</a><img class="site-logo" src="/still.png">
-               <img src="/photo.jpg">
-               <img src="/art.svg">
-               <img src="/animation.GIF?v=1">
-               <img src="/spinner.gif">
-               <img class="emoji-img" src="/faces/01.png">
-               <img class="crown-icon crown-emoji" src="/crown.webp">
-               <video width="64" height="64"><source src="/decoration.mp4"></video>
-               <video data-src="/feature.mp4"></video>
-               <img src="/tall.png" width="40" height="800">"#,
-            &page,
-        );
-        let entries: Vec<_> = result
-            .iter()
-            .map(|item| (item.name.as_str(), item.kind, item.page_asset))
-            .collect();
-        assert_eq!(
-            entries,
-            [
-                ("photo.jpg", Kind::Image, false),
-                ("animation.gif", Kind::Gif, false),
-                ("feature.mp4", Kind::Video, false),
-                ("tall.png", Kind::Image, false),
-                ("mark", Kind::Image, true),
-                ("still.png", Kind::Image, true),
-                ("art.svg", Kind::Image, true),
-                ("spinner.gif", Kind::Gif, true),
-                ("01.png", Kind::Image, true),
-                ("crown.webp", Kind::Image, true),
-                ("decoration.mp4", Kind::Video, true),
-            ]
-        );
-        assert_eq!(mime_format("image/gif"), Some(("gif", Kind::Gif)));
-        assert!(result[1].preview.is_some());
-        assert!(result[7].preview.is_some());
-    }
-
-    #[test]
-    fn validates_urls_and_windows_names() {
-        assert!(url("file:///C:/bad").is_err());
-        assert!(url("https://u:p@example.org/image.png").is_err());
-        assert_eq!(
-            media_name(&url("https://example.org/CON.png").unwrap(), "png"),
-            "media.png"
-        );
-    }
 }

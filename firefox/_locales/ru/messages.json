@@ -1,0 +1,175 @@
+{
+  "downloadOptions": {
+    "message": "Варианты загрузки видео"
+  },
+  "unsupportedVideo": {
+    "message": "LoadSail не нашёл доступный источник видео в этом плеере."
+  },
+  "sentToClipSail": {
+    "message": "Отправлено в очередь загрузок LoadSail."
+  },
+  "allowClipSailTransfer": {
+    "message": "Откройте панель расширения LoadSail и включите передачу в программу для Windows."
+  },
+  "downloadThisVideo": {
+    "message": "Скачать это видео"
+  },
+  "checkingQualities": {
+    "message": "Проверяем доступное качество…"
+  },
+  "youtubeTools": {
+    "message": "В комплекте LoadSail для Windows отсутствуют компоненты для YouTube."
+  },
+  "youtubeUnavailable": {
+    "message": "Для этого видео YouTube нет доступного качества."
+  },
+  "connectClipSail": {
+    "message": "Откройте LoadSail для Windows и выберите «Подключить Firefox / Zen»."
+  },
+  "sourceChanged": {
+    "message": "Файл в выбранном качестве больше недоступен. Обновите страницу и повторите попытку."
+  },
+  "sourceAccess": {
+    "message": "Firefox не разрешил доступ к сайту. Проверьте разрешения расширения."
+  },
+  "app": {
+    "message": "LoadSail"
+  },
+  "description": {
+    "message": "Отправляйте видео, изображения и аудио из Firefox в очередь загрузок LoadSail."
+  },
+  "checking": {
+    "message": "Проверяем вкладку…"
+  },
+  "permission": {
+    "message": "Разрешите расширению LoadSail доступ к сайтам в настройках Firefox."
+  },
+  "inspectionFailed": {
+    "message": "Не удалось проверить вкладку. Обновите страницу и снова откройте LoadSail."
+  },
+  "openSite": {
+    "message": "Откройте страницу с видео и повторите попытку."
+  },
+  "unavailable": {
+    "message": "Подходящие файлы не найдены. Если плеер ещё загружается, запустите воспроизведение."
+  },
+  "playFirst": {
+    "message": "Запустите видео и снова нажмите кнопку загрузки."
+  },
+  "chooseQuality": {
+    "message": "Выбрать качество видео"
+  },
+  "copyVideoLink": {
+    "message": "Скопировать ссылку на видео"
+  },
+  "videoLinkCopied": {
+    "message": "Ссылка скопирована. Вставьте её в LoadSail для Windows."
+  },
+  "videoLinkCopyFailed": {
+    "message": "Скопируйте ссылку из адресной строки браузера."
+  },
+  "protected": {
+    "message": "Видео защищено DRM."
+  },
+  "download": {
+    "message": "Скачать"
+  },
+  "downloadNamed": {
+    "message": "Скачать $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "downloadFailed": {
+    "message": "Firefox не смог начать загрузку. Проверьте, доступен ли ещё файл."
+  },
+  "sharingDescription": {
+    "message": "Разрешите расширению отправлять выбранные ссылки на медиа и адрес сайта в LoadSail на этом компьютере."
+  },
+  "sharingToggle": {
+    "message": "Разрешить передачу в LoadSail для Windows"
+  },
+  "sharingOn": {
+    "message": "Передача в LoadSail включена."
+  },
+  "sharingOff": {
+    "message": "Передача в LoadSail выключена."
+  },
+  "sharingFailed": {
+    "message": "Не удалось изменить разрешения передачи. Проверьте разрешения расширения в Firefox."
+  },
+  "all": {
+    "message": "Все"
+  },
+  "audio": {
+    "message": "Аудио"
+  },
+  "batchFailed": {
+    "message": "Часть файлов не удалось скачать. Они остаются выбранными."
+  },
+  "clearAll": {
+    "message": "Снять выделение"
+  },
+  "disableGlobal": {
+    "message": "Скрыть везде"
+  },
+  "disablePage": {
+    "message": "Скрыть на этой странице"
+  },
+  "disableSite": {
+    "message": "Скрыть на этом сайте"
+  },
+  "downloadSelected": {
+    "message": "Скачать выбранное"
+  },
+  "enableGlobal": {
+    "message": "Показать везде"
+  },
+  "enablePage": {
+    "message": "Показать на этой странице"
+  },
+  "enableSite": {
+    "message": "Показать на этом сайте"
+  },
+  "floatingButtons": {
+    "message": "Кнопка возле видео"
+  },
+  "highest": {
+    "message": "Максимальное качество · $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "images": {
+    "message": "Изображения"
+  },
+  "mediaType": {
+    "message": "Тип медиа"
+  },
+  "qualityNamed": {
+    "message": "Качество загрузки файла $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "selectAll": {
+    "message": "Выбрать все"
+  },
+  "selectNamed": {
+    "message": "Выбрать $FILE$",
+    "placeholders": {
+      "file": {
+        "content": "$1"
+      }
+    }
+  },
+  "videos": {
+    "message": "Видео"
+  }
+}

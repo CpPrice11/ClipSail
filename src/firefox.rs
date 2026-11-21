@@ -25,6 +25,11 @@ impl VideoRequest {
         let media = reqwest::Url::parse(&self.url).ok()?;
         let page = reqwest::Url::parse(&self.origin).ok()?;
         let youtube = is_youtube_video(&media) && self.origin == "https://www.youtube.com";
+        let extension = media
+            .path()
+            .trim_end_matches('/')
+            .rsplit_once('.')
+            .map(|(_, ext)| ext.to_ascii_lowercase());
         if self.url.len() > 8192
             || self.origin.len() > 512
             || self.title.chars().count() > 180
@@ -41,21 +46,10 @@ impl VideoRequest {
                 !youtube || !self.auto_start || !crate::youtube::valid_format_id(id)
             })
             || !(youtube
-                || matches!(
-                    media
-                        .path()
-                        .rsplit_once('.')
-                        .map(|(_, ext)| ext.to_ascii_lowercase())
-                        .as_deref(),
-                    Some("mp4" | "webm")
-                )
+                || matches!(extension.as_deref(), Some("mp4" | "webm"))
                 || self.auto_start
                     && matches!(
-                        media
-                            .path()
-                            .rsplit_once('.')
-                            .map(|(_, ext)| ext.to_ascii_lowercase())
-                            .as_deref(),
+                        extension.as_deref(),
                         Some(
                             "jpg"
                                 | "jpeg"

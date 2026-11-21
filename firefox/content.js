@@ -11,6 +11,7 @@
   const t = key => api.i18n.getMessage(key);
   const protectedMedia = media => media.mediaKeys || encrypted.has(media);
   const declaredSource = media => media.getAttribute("src") || media.getAttribute("data-src");
+  const mediaPath = url => url.pathname.replace(/\/+$/, "");
   const imagePattern = /\.(?:jpe?g|png|webp|gif|avif)$/i;
   const audioPattern = /\.(?:mp3|m4a|ogg|oga|wav)$/i;
   const videoPattern = /\.(?:mp4|webm)$/i;
@@ -35,7 +36,7 @@
     if (!value || value.length > 8192) return null;
     try {
       const url = new URL(value, document.baseURI);
-      if (!/^https?:$/.test(url.protocol) || url.username || url.password || !pattern.test(url.pathname)) return null;
+      if (!/^https?:$/.test(url.protocol) || url.username || url.password || !pattern.test(mediaPath(url))) return null;
       url.hash = "";
       return url;
     } catch {
@@ -140,19 +141,37 @@
     const menu = document.createElement("div");
     const style = document.createElement("style");
     style.textContent = `
-      :host { position: fixed; max-width: calc(100vw - 16px); z-index: 2147483646; font: 14px/1.4 "Segoe UI", system-ui, sans-serif; color: #cdd6f4; }
-      button { font: inherit; min-height: 32px; padding: 4px 10px; border-radius: 4px; border: 1px solid #6c7086; background: #313244; color: #cdd6f4; cursor: pointer; }
-      button:hover:not(:disabled) { background: #45475a; }
+      :host { position: fixed; max-width: calc(100vw - 16px); z-index: 2147483646; font: 14px/1.4 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; color: #fafafa; }
+      button { font: inherit; min-height: 32px; padding: 4px 10px; border-radius: 4px; border: 1px solid #454545; background: #333; color: #fafafa; cursor: pointer; }
+      button:hover:not(:disabled) { background: #454545; }
+      .download-trigger { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; }
+      .download-trigger[aria-expanded="true"] { color: #dc81d6; border-color: #dc81d6; }
       button:disabled { cursor: wait; opacity: .7; }
       div[hidden], span:empty { display: none; }
-      button:focus-visible { outline: 2px solid #89b4fa; outline-offset: 2px; }
-      div, span:not(:empty) { position: absolute; top: calc(100% + 4px); right: 0; width: max-content; max-width: min(280px, calc(100vw - 16px)); background: #181825; color: #cdd6f4; padding: 8px; border: 1px solid #45475a; border-radius: 6px; }
+      button:focus-visible { outline: 2px solid #f7f7f7; outline-offset: 2px; }
+      div, span:not(:empty) { position: absolute; top: calc(100% + 4px); right: 0; width: max-content; max-width: min(280px, calc(100vw - 16px)); background: #202020; color: #fafafa; padding: 8px; border: 1px solid #454545; border-radius: 6px; }
       div:not([hidden]), section:not(:empty) { display: grid; gap: 6px; } section { max-height: min(280px, 40vh); overflow-y: auto; padding: 2px; }
       div span:not(:empty) { position: static; width: auto; padding: 0; border: 0; }
       :host([hidden]) { display: none; }
     `;
     button.type = "button";
-    button.textContent = t(label);
+    button.className = "download-trigger";
+    button.title = t(label);
+    button.setAttribute("aria-label", button.title);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "20");
+    svg.setAttribute("height", "20");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(svg.namespaceURI, "path");
+    path.setAttribute("d", "M12 3v12m-5-5 5 5 5-5M5 16v4h14v-4");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+    button.append(svg);
     status.setAttribute("role", "status");
     menu.hidden = true;
     const choices = document.createElement("section");
@@ -198,7 +217,7 @@
       const version = ++menuVersion;
       const result = youtube ? await youtubeQualities(video) : {
         qualities: variants(video).map(({ url, height }) => ({
-          height, extension: url.pathname.split(".").pop(), format_id: url.href
+          height, extension: mediaPath(url).split(".").pop(), format_id: url.href
         }))
       };
       if (menuVersion !== version || !host.isConnected) return;
@@ -287,7 +306,7 @@
         const options = variants(media);
         if (!options.length) return [];
         if (!ids.has(media)) ids.set(media, ++nextId);
-        const path = options[0].url.pathname.split("/").pop();
+        const path = mediaPath(options[0].url).split("/").pop();
         let name = path;
         try { name = decodeURIComponent(path); } catch { /* Preserve the encoded filename. */ }
         return [{
@@ -295,7 +314,7 @@
           dimensions: media instanceof HTMLImageElement ? [media.naturalWidth, media.naturalHeight]
             : media instanceof HTMLVideoElement ? [media.videoWidth, media.videoHeight] : [],
           duration: Number.isFinite(media.duration) ? media.duration : null,
-          variants: options.map(({ url, height }) => ({ value: url.href, height, ext: url.pathname.split(".").pop() }))
+          variants: options.map(({ url, height }) => ({ value: url.href, height, ext: mediaPath(url).split(".").pop() }))
         }];
       }).slice(0, 60);
       const youtubePlayer = mediaElements.find(media => media instanceof HTMLVideoElement

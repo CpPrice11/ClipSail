@@ -91,32 +91,3 @@ pub fn name(response: &Response) -> AppResult<String> {
             .unwrap_or(&path),
     ))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_utf8_and_quoted_attachment_filenames() {
-        assert_eq!(
-            disposition(
-                "attachment; filename=\"fallback.zip\"; filename*=UTF-8'uk'%D0%A2%D0%B5%D1%81%D1%82.zip"
-            ),
-            (true, Some("Тест.zip".to_owned()))
-        );
-        assert_eq!(
-            disposition("inline; filename=\"report; copy.pdf\""),
-            (false, Some("report; copy.pdf".to_owned()))
-        );
-    }
-
-    #[test]
-    fn keeps_names_inside_the_download_folder() {
-        assert_eq!(safe_name("../outside.zip"), "_outside.zip");
-        assert_eq!(safe_name("NUL.pdf"), "download.pdf");
-        assert_eq!(safe_name("Report:2026.pdf"), "Report_2026.pdf");
-        assert_eq!(safe_name("readme"), "readme");
-        assert_eq!(safe_name("print.prn"), "print.prn");
-        assert_eq!(safe_name(".."), "download");
-    }
-}

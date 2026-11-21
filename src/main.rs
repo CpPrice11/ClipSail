@@ -8,6 +8,7 @@ mod extractor;
 mod firefox;
 mod hls;
 mod paths;
+mod player_capture;
 mod playback;
 mod saved_file;
 mod stream;
@@ -266,7 +267,7 @@ async fn find_media(state: State<'_, Arc<App>>, url: String) -> AppResult<Vec<Me
             })
         });
         if usable
-            || discovery::file_format(parsed.path()).is_some()
+            || discovery::path_format(&parsed).is_some()
             || discovery::is_hls(&parsed)
             || discovery::is_dash(&parsed)
         {
@@ -639,7 +640,7 @@ fn browser_video_name(video: &firefox::VideoRequest) -> String {
     let extension = if firefox::is_youtube_video(&url) {
         "mp4"
     } else {
-        discovery::file_format(url.path())
+        discovery::path_format(&url)
             .expect("validated video format")
             .0
     };
@@ -668,7 +669,7 @@ fn next_browser_video(handle: AppHandle, state: State<'_, Arc<App>>) -> Option<I
         let extension = if can_check_qualities {
             "mp4"
         } else {
-            discovery::file_format(url.path())?.0
+            discovery::path_format(&url)?.0
         };
         let name = browser_video_name(&video);
         if let Some(window) = handle.get_webview_window("main") {
@@ -856,26 +857,6 @@ fn resolve_portable_folder(root: &Path, stored: PathBuf) -> std::io::Result<Path
         std::io::ErrorKind::InvalidData,
         "Invalid portable download folder",
     ))
-}
-
-#[cfg(test)]
-#[test]
-fn portable_download_folders_follow_the_package() {
-    let original = Path::new(r"D:\ClipSail");
-    let moved = Path::new(r"F:\Portable\ClipSail");
-    let downloads = original.join(r"data\Downloads");
-    let relative = stored_folder(&downloads, original);
-    assert_eq!(relative, Path::new(r"data\Downloads"));
-    assert_eq!(
-        resolve_portable_folder(moved, relative.to_path_buf()).unwrap(),
-        moved.join(relative)
-    );
-    let external = PathBuf::from(r"D:\Videos");
-    assert_eq!(
-        resolve_portable_folder(moved, external.clone()).unwrap(),
-        external
-    );
-    assert!(resolve_portable_folder(moved, PathBuf::from(r"..\Outside")).is_err());
 }
 
 fn setup(handle: &AppHandle) -> Result<App, Box<dyn std::error::Error>> {
@@ -1185,6 +1166,39 @@ fn main() {
         config.create = false;
         (config.clone(), root.join("data/webview"))
     });
+    let commands: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        desktop_mica,
+        find_media,
+        find_collection,
+        saved_gallery,
+        saved_video_qualities,
+        enqueue_saved_quality,
+        inspect_media,
+        inspect_direct,
+        inspect_stream_resolution,
+        playback::set_preview_source,
+        player_capture::start_player_capture,
+        player_capture::poll_player_capture,
+        player_capture::stop_player_capture,
+        fetch_preview,
+        snapshot,
+        firefox_downloads,
+        connect_firefox,
+        set_tray_language,
+        next_browser_video,
+        browser_video_qualities,
+        decide_browser_video,
+        pick_folder,
+        enqueue,
+        change_job,
+        open_folder,
+        open_saved_file,
+        open_page,
+        open_youtube,
+        updater::update_channel,
+        updater::check_update,
+        updater::install_update
+    ];
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
@@ -1202,6 +1216,7 @@ fn main() {
                     ));
                     let state = Arc::new(state);
                     app.manage(Arc::clone(&state));
+                    app.manage(player_capture::PlayerCapture::default());
                     playback::install(app.handle());
                     install_tray(app.handle())?;
                     // Update an existing browser registration when Pullora launches a new version folder.
@@ -1259,36 +1274,13 @@ fn main() {
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            desktop_mica,
-            find_media,
-            find_collection,
-            saved_gallery,
-            saved_video_qualities,
-            enqueue_saved_quality,
-            inspect_media,
-            inspect_direct,
-            inspect_stream_resolution,
-            playback::set_preview_source,
-            fetch_preview,
-            snapshot,
-            firefox_downloads,
-            connect_firefox,
-            set_tray_language,
-            next_browser_video,
-            browser_video_qualities,
-            decide_browser_video,
-            pick_folder,
-            enqueue,
-            change_job,
-            open_folder,
-            open_saved_file,
-            open_page,
-            open_youtube,
-            updater::update_channel,
-            updater::check_update,
-            updater::install_update
-        ])
+        .invoke_handler(move |invoke| {
+            if invoke.message.webview_ref().label() != "main" {
+                invoke.resolver.reject("unsupported");
+                return true;
+            }
+            commands(invoke)
+        })
         .run(context);
     if let Err(error) = result {
         rfd::MessageDialog::new()

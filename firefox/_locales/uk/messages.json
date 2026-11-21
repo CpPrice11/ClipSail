@@ -3,13 +3,13 @@
     "message": "Параметри завантаження відео"
   },
   "unsupportedVideo": {
-    "message": "ClipSail не знайшов підтримуваного джерела для цього плеєра."
+    "message": "LoadSail не знайшов підтримуваного джерела для цього плеєра."
   },
   "sentToClipSail": {
-    "message": "Передано в чергу завантажень ClipSail."
+    "message": "Передано в чергу завантажень LoadSail."
   },
   "allowClipSailTransfer": {
-    "message": "Відкрий панель розширення та дозволь передачу в ClipSail для Windows."
+    "message": "Відкрий панель розширення та дозволь передачу в LoadSail для Windows."
   },
   "downloadThisVideo": {
     "message": "Завантажити це відео"
@@ -18,13 +18,13 @@
     "message": "Перевіряю доступні якості…"
   },
   "youtubeTools": {
-    "message": "У комплекті ClipSail для Windows бракує інструментів для YouTube."
+    "message": "У комплекті LoadSail для Windows бракує інструментів для YouTube."
   },
   "youtubeUnavailable": {
     "message": "Для цього відео YouTube немає доступної сумісної якості."
   },
   "connectClipSail": {
-    "message": "Відкрий ClipSail для Windows і натисни «Під’єднати Firefox / Zen»."
+    "message": "Відкрий LoadSail для Windows і натисни «Під’єднати Firefox / Zen»."
   },
   "sourceChanged": {
     "message": "Файл вибраної якості більше недоступний. Онови сторінку й спробуй ще раз."
@@ -33,19 +33,19 @@
     "message": "Firefox не надав доступу до сайту цього файла. Перевір дозволи розширення."
   },
   "app": {
-    "message": "ClipSail"
+    "message": "LoadSail"
   },
   "description": {
-    "message": "Надсилай відео, фото й аудіо з Firefox до черги ClipSail для Windows."
+    "message": "Надсилай відео, фото й аудіо з Firefox до черги LoadSail для Windows."
   },
   "checking": {
     "message": "Перевіряю вкладку…"
   },
   "permission": {
-    "message": "У Firefox відкрий налаштування дозволів ClipSail і ввімкни доступ до сайтів."
+    "message": "У Firefox відкрий налаштування дозволів LoadSail і ввімкни доступ до сайтів."
   },
   "inspectionFailed": {
-    "message": "Не вдалося перевірити вкладку. Онови вебсторінку й відкрий ClipSail знову."
+    "message": "Не вдалося перевірити вкладку. Онови вебсторінку й відкрий LoadSail знову."
   },
   "openSite": {
     "message": "Відкрий сторінку з відео й спробуй ще раз."
@@ -63,7 +63,7 @@
     "message": "Копіювати посилання на відео"
   },
   "videoLinkCopied": {
-    "message": "Скопійовано. Встав посилання в ClipSail для Windows."
+    "message": "Скопійовано. Встав посилання в LoadSail для Windows."
   },
   "videoLinkCopyFailed": {
     "message": "Скопіюй посилання з адресного рядка браузера."
@@ -86,16 +86,16 @@
     "message": "Firefox не зміг почати завантаження. Перевір, чи файл досі доступний на сайті."
   },
   "sharingDescription": {
-    "message": "Дозволь передавати вибрані посилання й адресу сайту до ClipSail на цьому ПК."
+    "message": "Дозволь передавати вибрані посилання й адресу сайту до LoadSail на цьому ПК."
   },
   "sharingToggle": {
-    "message": "Дозволити передачу в ClipSail для Windows"
+    "message": "Дозволити передачу в LoadSail для Windows"
   },
   "sharingOn": {
-    "message": "Передавання до ClipSail увімкнено."
+    "message": "Передавання до LoadSail увімкнено."
   },
   "sharingOff": {
-    "message": "Передавання до ClipSail вимкнено."
+    "message": "Передавання до LoadSail вимкнено."
   },
   "sharingFailed": {
     "message": "Не вдалося змінити дозвіл на передавання. Перевір дозволи розширення у Firefox."

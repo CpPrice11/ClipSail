@@ -76,6 +76,8 @@ function icon(name) {
 }
 for (const node of document.querySelectorAll("[data-icon]")) node.append(icon(node.dataset.icon));
 
+let playerCapture = null;
+let playerCaptureMessage = null;
 const app = { items: [], selected: new Set(), focus: null, detailsUrl: null, filter: "video", sortLoading: false, phase: "initial",
   error: null, queue: [], queueError: null, folder: "", tab: "find", submitting: false };
 let noticeTimer;
@@ -116,7 +118,7 @@ function notify(key) {
 }
 const errorKey = error => typeof error === "string" ? error : "unknown";
 
-const tabs = ["saved", "find", "queue"];
+const tabs = ["saved", "find", "queue", "settings"];
 
 function renderNav() {
   const expanded = $("shell").classList.contains("nav-expanded");
@@ -594,6 +596,7 @@ function downloadQualityDetails(item) {
 }
 
 function renderGallery() {
+  renderPlayerCapture();
   for (const img of $("gallery").querySelectorAll("img")) observer.unobserve(img);
   const items = visibleItems();
   const categoryFocus = $("filters").contains(document.activeElement) ? document.activeElement.dataset.kind : null;
@@ -1159,8 +1162,7 @@ const savedMenuGroups = [
   ]]
 ];
 
-for (const [triggerId, menuId] of [...savedMenuGroups, ["findMediaType", "filters"], ["findSort", "findSortMenu"], ["queueMedia", "queueMediaMenu"],
-  ["queueConnections", "queueConnectionsMenu"]]) {
+for (const [triggerId, menuId] of [...savedMenuGroups, ["findMediaType", "filters"], ["findSort", "findSortMenu"], ["queueMedia", "queueMediaMenu"]]) {
   const trigger = $(triggerId);
   const menu = $(menuId);
   menu.addEventListener("toggle", event => {
@@ -1788,6 +1790,8 @@ document.addEventListener("keydown", event => {
 $("searchForm").addEventListener("submit", async event => {
   event.preventDefault();
   if (app.phase === "loading") return;
+  endPlayerCapture();
+  playerCaptureMessage = null;
   const url = $("url").value.trim();
   app.searchUrl = url;
   app.collectionScan = $("scanCollection").checked;
@@ -1829,20 +1833,112 @@ $("openBlockedPage").addEventListener("click", async () => {
   catch (error) { notify(errorKey(error)); }
 });
 
+function renderPlayerCapture() {
+  const url = $("url").value.trim();
+  $("playerCaptureControls").hidden = !/^https?:\/\//i.test(url);
+  $("openPlayerCapture").disabled = app.phase === "loading" || Boolean(playerCapture);
+  $("stopPlayerCapture").hidden = !playerCapture;
+  $("playerCaptureStatus").textContent = playerCaptureMessage ? t(playerCaptureMessage) : "";
+}
+
+function endPlayerCapture() {
+  const capture = playerCapture;
+  playerCapture = null;
+  if (capture?.id) void invoke("stop_player_capture", { id: capture.id }).catch(() => {});
+}
+
+$("url").addEventListener("input", renderPlayerCapture);
+$("stopPlayerCapture").addEventListener("click", () => {
+  endPlayerCapture();
+  playerCaptureMessage = null;
+  renderPlayerCapture();
+  $("openPlayerCapture").focus();
+});
+
+$("openPlayerCapture").addEventListener("click", async () => {
+  if (playerCapture || app.phase === "loading") return;
+  const url = $("url").value.trim();
+  if (url !== app.searchUrl) {
+    metadataScan?.abort();
+    app.searchUrl = url;
+    app.items = [];
+    app.selected.clear();
+    app.focus = null;
+    app.detailsUrl = null;
+    app.collectionPartial = false;
+    app.collectionScan = false;
+    app.phase = "results";
+  }
+  const capture = { id: null };
+  playerCapture = capture;
+  playerCaptureMessage = "playerCaptureWaiting";
+  renderGallery();
+  try {
+    capture.id = await invoke("start_player_capture", { url, title: t("playerCaptureTitle") });
+    if (playerCapture !== capture) {
+      await invoke("stop_player_capture", { id: capture.id });
+      return;
+    }
+    await readPlayerCapture(capture);
+  } catch (error) {
+    if (playerCapture === capture) {
+      endPlayerCapture();
+      playerCaptureMessage = errorKey(error);
+      renderPlayerCapture();
+    }
+  }
+});
+
+async function readPlayerCapture(capture) {
+  const { open, items } = await invoke("poll_player_capture", { id: capture.id });
+  if (playerCapture !== capture) return;
+  const added = items.filter(item => !app.items.some(found => found.url === item.url));
+  if (added.length) {
+    app.items.unshift(...added);
+    app.error = null;
+    app.phase = "results";
+    if (playerCaptureMessage !== "playerCaptureFound") {
+      app.filter = "video";
+      app.focus = added[0];
+    }
+    playerCaptureMessage = "playerCaptureFound";
+    void refreshSearchSort();
+  }
+  if (!open) {
+    endPlayerCapture();
+    if (playerCaptureMessage !== "playerCaptureFound") playerCaptureMessage = "playerCaptureEmpty";
+    renderPlayerCapture();
+    return;
+  }
+  setTimeout(() => {
+    if (playerCapture !== capture) return;
+    void readPlayerCapture(capture).catch(error => {
+      if (playerCapture !== capture) return;
+      endPlayerCapture();
+      playerCaptureMessage = errorKey(error);
+      renderPlayerCapture();
+    });
+  }, 800);
+}
+
 function renderFolder() {
-  $("folderPath").textContent = app.folder || t("unknownValue");
-  $("folderPath").title = app.folder;
+  for (const id of ["folderPath", "settingsFolderPath"]) {
+    $(id).textContent = app.folder || t("unknownValue");
+    $(id).title = app.folder;
+  }
   $("directFolder").value = app.folder || "";
   $("directFolder").title = app.folder || "";
 }
-$("pickFolder").addEventListener("click", async () => {
-  $("pickFolder").disabled = true;
+const folderButtons = [$("pickFolder"), $("settingsPickFolder")];
+async function changeDownloadFolder() {
+  for (const control of folderButtons) control.disabled = true;
   try {
     app.folder = await invoke("pick_folder") || app.folder;
     renderFolder();
   } catch (error) { notify(errorKey(error)); }
-  finally { $("pickFolder").disabled = false; }
-});
+  finally { for (const control of folderButtons) control.disabled = false; }
+}
+for (const control of folderButtons) control.addEventListener("click", changeDownloadFolder);
 const downloadOptions = $("downloadOptions");
 let pendingDownloads = [];
 
@@ -1984,10 +2080,12 @@ async function downloadSelected(selection) {
 }
 
 const jobNodes = new Map();
+$("firefoxAddon").addEventListener("click", event => {
+  event.preventDefault();
+  void invoke("open_page", { url: event.currentTarget.href }).catch(error => notify(errorKey(error)));
+});
 for (const [id, chrome] of [["connectFirefox", false], ["connectChrome", true]]) $(id).addEventListener("click", async event => {
   const control = event.currentTarget;
-  $("queueConnectionsMenu").hidePopover();
-  $("queueConnections").focus();
   control.disabled = true;
   try {
     await invoke("connect_firefox", { chrome });
@@ -2473,15 +2571,16 @@ function translate() {
   document.title = t("app");
   queueDateFormat = new Intl.DateTimeFormat(language, { dateStyle: "medium", timeStyle: "short" });
   for (const node of document.querySelectorAll("[data-t]")) node.textContent = t(node.dataset.t);
-  for (const [id, key] of [["language", "language"], ["tabs", "app"], ["savedFilters", "filter"],
+  for (const [id, key] of [["tabs", "app"], ["savedFilters", "filter"],
     ["findTab", "find"], ["queueTab", "downloads"], ["savedTab", "savedGallery"], ["savedSearch", "savedSearch"],
+    ["settingsTab", "settings"],
     ["savedSort", "savedSort"], ["savedView", "savedView"], ["refreshSaved", "refreshSaved"], ["savedTimeline", "savedTimeline"],
-    ["queueCategories", "queueCategories"], ["queueConnections", "queueConnections"],
+    ["queueCategories", "queueCategories"],
     ["closeZoom", "close"], ["previewRail", "previewStrip"], ["previousPreview", "previousPreview"], ["nextPreview", "nextPreview"]]) {
     $(id).setAttribute("aria-label", t(key));
   }
   for (const id of ["closeZoom", "previousPreview", "nextPreview"]) $(id).title = t(id === "closeZoom" ? "close" : id);
-  for (const id of ["findTab", "queueTab", "savedTab", "savedFilters", "savedSort", "savedView", "refreshSaved", "queueConnections"]) $(id).title = $(id).getAttribute("aria-label");
+  for (const id of ["findTab", "queueTab", "savedTab", "settingsTab", "savedFilters", "savedSort", "savedView", "refreshSaved"]) $(id).title = $(id).getAttribute("aria-label");
   $("savedSearch").placeholder = t("savedSearch");
   if (lastNotice) $("notice").textContent = t(lastNotice);
   renderGallery();

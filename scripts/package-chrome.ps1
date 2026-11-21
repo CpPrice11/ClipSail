@@ -17,7 +17,6 @@ if (!$bridge.Contains("chrome-extension://$id/")) { throw 'Chrome extension ID d
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $source 'manifest.json') | ConvertFrom-Json -AsHashtable
 $manifest.Remove('browser_specific_settings')
 $manifest.key = $publicKey
-$manifest.version = '0.1.0'
 $manifest.background = @{ service_worker = 'background.js' }
 $manifest.icons = [ordered]@{}
 $manifest.action.default_icon = [ordered]@{}
@@ -38,7 +37,7 @@ try {
 } finally { $original.Dispose() }
 $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination 'manifest.json') -Encoding utf8
 
-foreach ($locale in @('en','uk')) {
+foreach ($locale in @('en','uk','ru')) {
     $file = Join-Path $destination "_locales/$locale/messages.json"
     $content = [IO.File]::ReadAllText($file).Replace('Firefox / Zen', 'Chrome').Replace('Firefox', 'Chrome')
     [IO.File]::WriteAllText($file, $content)

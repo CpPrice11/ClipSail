@@ -25,7 +25,7 @@ async function startDownload(message, sender) {
     && /^[\w-]{11}$/.test(pageVideo ?? "")
     && value === "https://www.youtube.com/watch?v=" + pageVideo;
   if (!/^https?:$/.test(page.protocol) || !/^https?:$/.test(url.protocol) || url.username || url.password
-      || (!youtube && !/\.(?:mp4|webm|jpe?g|png|webp|gif|avif|mp3|m4a|ogg|oga|wav)$/i.test(url.pathname))
+      || (!youtube && !/\.(?:mp4|webm|jpe?g|png|webp|gif|avif|mp3|m4a|ogg|oga|wav)\/*$/i.test(url.pathname))
       || !await api.permissions.contains({
         origins: [page, url].map(address => address.protocol + "//" + address.hostname + "/*")
       })) return { error: "sourceAccess" };

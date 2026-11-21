@@ -106,6 +106,7 @@ main { min-width: 0; background: var(--content-surface); border: 1px solid #ffff
 .search h1 { margin-bottom: 18px; }
 .search label { display: block; margin-bottom: 7px; font-weight: 400; }
 .search .collection-option { display: flex; align-items: center; gap: 8px; width: fit-content; margin: 9px 0 0; min-height: 28px; cursor: pointer; }
+.player-capture { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 8px; }
 #collectionStatus { margin: 0 0 12px; }
 .search-row { display: flex; gap: 10px; }
 .url-field {
@@ -191,7 +192,19 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .destination .muted,.selection > .muted { font-size: 12px; }
 .selection > .muted { flex: 0 1 auto; min-width: 0; }
 .selection button { flex: none; }
-#queuePanel { padding: 36px var(--gutter) 24px; height: calc(100dvh - var(--nav-height) - 1px); overflow: auto; }
+#queuePanel, #settingsPanel { padding: 36px var(--gutter) 24px; height: calc(100dvh - var(--nav-height) - 1px); overflow: auto; }
+.settings-content { max-inline-size: 740px; }
+.settings-group { margin-block-start: 24px; }
+.settings-group h2 { margin-block-end: 8px; }
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px;
+  padding: 12px; border-block-start: 1px solid var(--edge); background: var(--mantle);
+}
+.settings-row:last-child { border-block-end: 1px solid var(--edge); }
+.settings-row > div { flex: 1 1 260px; min-inline-size: 0; }
+.settings-row .path { white-space: normal; overflow-wrap: anywhere; }
+.settings-row a { color: var(--accent); text-underline-offset: 3px; }
+.settings-row a .fluent-icon { margin-inline-start: 6px; font-size: 13px; }
 .queue-head { min-height: 34px; margin-bottom: 20px; }
 .queue-filters,#queueCategories { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .queue-filters { gap: 10px; margin-bottom: 12px; }
@@ -199,7 +212,6 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 #queueCategories button { background: transparent; border-color: transparent; box-shadow: none; }
 #queueCategories button:hover { background: var(--control-hover); }
 #queueCategories button[aria-pressed="true"] { background: var(--surface); border-color: var(--edge); }
-#queueConnectionsMenu button { padding-inline-start: 12px; }
 .queue-list { min-width: 0; overflow: hidden; border: 1px solid var(--edge); border-radius: 8px; background: var(--base); }
 #queueTable { width: 100%; table-layout: fixed; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 #queueTable th { text-align: start; font-size: 12px; border-bottom: 1px solid var(--edge); background: var(--mantle); }
@@ -278,7 +290,7 @@ dialog button { position: absolute; top: 4px; right: 5px; }
 }
 @media (max-width: 640px) {
   .caption-buttons button { inline-size: 36px; }
-  .search,#queuePanel { padding-inline: 12px; }
+  .search,#queuePanel,#settingsPanel { padding-inline: 12px; }
   .results { --results-gutter: 12px; }
   .results-toolbar { position: sticky; top: 0; z-index: 2; background: var(--base); }
   .results-toolbar .find-filter-bar { margin-bottom: 0; padding-bottom: 14px; }
@@ -507,7 +519,7 @@ dialog button { position: absolute; top: 4px; right: 5px; }
 .details-header { display: flex; gap: 8px; justify-content: space-between; align-items: start; }
 .details-header button { min-height: 28px; min-width: 28px; padding: 4px; }
 @media (max-width: 760px) {
-  .saved-header, .search, #queuePanel { padding-top: 24px; }
+  .saved-header, .search, #queuePanel, #settingsPanel { padding-top: 24px; }
 }
 
 :is(#findSortMenu, #savedSortMenu) {

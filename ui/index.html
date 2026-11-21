@@ -13,7 +13,6 @@
     <label id="savedSearchBox" class="url-field" hidden><input id="savedSearch" type="search" autocomplete="off"></label>
     <div class="app-controls">
       <button id="updatesButton" class="icon-button" type="button" aria-haspopup="dialog"><span data-icon="retry"></span></button>
-      <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option><option value="ru" lang="ru">Русский</option></select>
       <div class="caption-buttons">
         <button id="windowMinimize" type="button"><span class="fluent-icon" aria-hidden="true">&#xE921;</span></button>
         <button id="windowMaximize" type="button"><span class="fluent-icon" aria-hidden="true">&#xE922;</span></button>
@@ -28,6 +27,7 @@
       <button id="savedTab" role="tab" aria-controls="savedPanel" aria-selected="false" tabindex="-1"><span class="fluent-icon" aria-hidden="true">&#xE7AA;</span><span class="nav-label" data-t="savedGallery"></span></button>
       <button id="findTab" role="tab" aria-controls="findPanel" aria-selected="true"><span data-icon="search"></span><span class="nav-label" data-t="find"></span></button>
       <button id="queueTab" role="tab" aria-controls="queuePanel" aria-selected="false" tabindex="-1"><span data-icon="download"></span><span class="nav-label" data-t="downloads"></span><span id="queueCount" class="count" hidden></span></button>
+      <button id="settingsTab" role="tab" aria-controls="settingsPanel" aria-selected="false" tabindex="-1"><span class="fluent-icon" aria-hidden="true">&#xE713;</span><span class="nav-label" data-t="settings"></span></button>
     </nav>
   </div>
 
@@ -41,6 +41,11 @@
           <button id="searchButton" class="primary" type="submit"><span data-icon="search"></span><span data-t="search"></span></button>
         </div>
         <label class="collection-option"><input id="scanCollection" type="checkbox"><span data-t="scanCollection"></span></label>
+        <div id="playerCaptureControls" class="player-capture" hidden>
+          <button id="openPlayerCapture" type="button"><span data-icon="video"></span><span data-t="playerCaptureOpen"></span></button>
+          <button id="stopPlayerCapture" type="button" data-t="playerCaptureStop" hidden></button>
+          <span id="playerCaptureStatus" class="muted" role="status"></span>
+        </div>
         <p id="searchError" class="error" role="alert" hidden></p>
         <button id="openBlockedPage" type="button" data-t="openInBrowser" hidden></button>
       </form>
@@ -124,13 +129,6 @@
         <button id="addDirectDownload" class="primary" type="button">
           <span class="fluent-icon" aria-hidden="true">&#xE710;</span><span data-t="addDownload"></span>
         </button>
-        <button class="saved-command" id="queueConnections" type="button" popovertarget="queueConnectionsMenu" aria-haspopup="menu" aria-expanded="false">
-          <span class="fluent-icon" aria-hidden="true">&#xE712;</span>
-        </button>
-        <div class="saved-menu" id="queueConnectionsMenu" popover role="menu" aria-labelledby="queueConnections">
-          <button id="connectFirefox" type="button" role="menuitem" data-t="connectFirefox"></button>
-          <button id="connectChrome" type="button" role="menuitem" data-t="connectChrome"></button>
-        </div>
       </div>
       <div id="queueError" class="error" role="alert" hidden></div>
       <div class="queue-filters">
@@ -169,6 +167,33 @@
           <span data-icon="folder"></span>
           <span id="queuePath"></span>
         </footer>
+      </div>
+    </section>
+    <section id="settingsPanel" role="tabpanel" aria-labelledby="settingsTab" hidden>
+      <div class="settings-content">
+        <h1 data-t="settings"></h1>
+        <section class="settings-group" aria-labelledby="generalSettingsTitle">
+          <h2 id="generalSettingsTitle" data-t="generalSettings"></h2>
+          <div class="settings-row">
+            <label for="language" data-t="language"></label>
+            <select id="language"><option value="uk" lang="uk">Українська</option><option value="en" lang="en">English</option><option value="ru" lang="ru">Русский</option></select>
+          </div>
+          <div class="settings-row" role="group" aria-labelledby="settingsFolderLabel">
+            <div><span id="settingsFolderLabel" data-t="destination"></span><p id="settingsFolderPath" class="path"></p></div>
+            <button id="settingsPickFolder" type="button" data-t="change" aria-labelledby="settingsPickFolder settingsFolderLabel"></button>
+          </div>
+        </section>
+        <section class="settings-group" aria-labelledby="browserSettingsTitle">
+          <h2 id="browserSettingsTitle" data-t="browserConnections"></h2>
+          <div class="settings-row">
+            <a id="firefoxAddon" href="https://addons.mozilla.org/firefox/addon/clipsail-video/" target="_blank" rel="noopener noreferrer"><span data-t="firefoxAddon"></span><span class="fluent-icon" aria-hidden="true">&#xE8A7;</span></a>
+            <button id="connectFirefox" type="button" data-t="connectFirefox"></button>
+          </div>
+          <div class="settings-row">
+            <span>Chrome</span>
+            <button id="connectChrome" type="button" data-t="connectChrome"></button>
+          </div>
+        </section>
       </div>
     </section>
   </main>
